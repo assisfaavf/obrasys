@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+venv/
 .env
 
 # Django
@@ -16,3 +17,4 @@ app/staticfiles/
 # OS
 .DS_Store
 Thumbs.db
+
