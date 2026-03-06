@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import models
 
 
@@ -29,3 +30,48 @@ class BudgetItem(models.Model):
 
     def __str__(self) -> str:
         return f"{self.project.name} - {self.eap_code}"
+
+
+class BudgetImportMode(models.TextChoices):
+    CREATE_ONLY = "CREATE_ONLY", "Create only"
+    UPSERT_BY_EAP = "UPSERT_BY_EAP", "Upsert by EAP"
+    REPLACE_ALL = "REPLACE_ALL", "Replace all"
+
+
+class BudgetImportJobStatus(models.TextChoices):
+    PREVIEW = "PREVIEW", "Preview"
+    APPLIED = "APPLIED", "Applied"
+    ERROR = "ERROR", "Error"
+
+
+class BudgetImportJob(models.Model):
+    project = models.ForeignKey(
+        "core.Project", on_delete=models.CASCADE, related_name="budget_import_jobs"
+    )
+    mode = models.CharField(
+        max_length=20,
+        choices=BudgetImportMode.choices,
+        default=BudgetImportMode.UPSERT_BY_EAP,
+    )
+    original_filename = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="budget_import_jobs",
+    )
+    status = models.CharField(
+        max_length=10,
+        choices=BudgetImportJobStatus.choices,
+        default=BudgetImportJobStatus.PREVIEW,
+    )
+    summary_json = models.JSONField(default=dict, blank=True)
+    preview_json = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.project.name} - {self.original_filename}"
