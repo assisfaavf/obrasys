@@ -1,0 +1,14 @@
+{% extends "billing/base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  <p class="muted">Medicao {{ period.number }} - {{ period.project.name }}</p>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Salvar</button>
+  </form>
+  <p><a href="{% url 'billing:measurement_detail' period.id %}">Voltar</a></p>
+{% endblock %}

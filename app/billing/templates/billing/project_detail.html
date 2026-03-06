@@ -1,0 +1,42 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Project {{ project.name }}{% endblock %}
+
+{% block content %}
+  <h1>{{ project.name }}</h1>
+  <p class="muted">Client: {{ project.client.name }} | Status: {{ project.status }}</p>
+
+  <div class="actions">
+    <a href="{% url 'billing:measurement_new' project.id %}">Nova medicao</a>
+  </div>
+
+  <h2>Medicoes</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Numero</th>
+        <th>Ref month</th>
+        <th>Workflow</th>
+        <th>Financial</th>
+        <th>Total snapshot</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for period in periods %}
+        <tr>
+          <td>{{ period.number }}</td>
+          <td>{{ period.ref_month }}</td>
+          <td>{{ period.workflow_status }}</td>
+          <td>{{ period.financial_status }}</td>
+          <td>{{ period.total_indexed_snapshot|default:period.total_total_snapshot }}</td>
+          <td><a href="{% url 'billing:measurement_detail' period.id %}">Open</a></td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="6">No measurements yet.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Excluir linha{% endblock %}
+
+{% block content %}
+  <h1>Excluir linha</h1>
+  <p>Tem certeza que deseja excluir a linha {{ line.id }} da medicao {{ period.number }}?</p>
+  <form method="post">
+    {% csrf_token %}
+    <button type="submit">Confirmar exclusao</button>
+  </form>
+  <p><a href="{% url 'billing:measurement_detail' period.id %}">Cancelar</a></p>
+{% endblock %}

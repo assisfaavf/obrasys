@@ -1,0 +1,224 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Medicao {{ period.number }}{% endblock %}
+
+{% block content %}
+  <h1>{{ period.project.name }} - Medicao {{ period.number }}</h1>
+  <p class="muted">
+    Workflow: {{ period.workflow_status }} |
+    Financial: {{ period.financial_status }} |
+    Ref: {{ period.ref_month }}
+  </p>
+
+  <div class="actions">
+    <a href="{% url 'billing:project_detail' period.project.id %}">Voltar para obra</a>
+  </div>
+
+  <div class="card">
+    <h2>Dados da medicao</h2>
+    {% if is_draft %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="update_period">
+        {{ period_form.as_p }}
+        <button type="submit">Salvar dados</button>
+      </form>
+    {% else %}
+      <p>Inicio: {{ period.start_date }} | Fim: {{ period.end_date }}</p>
+      <p>Notas: {{ period.notes|default:"-" }}</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Resumo atual (recalculado)</h2>
+    <p>Material: {{ total_material }}</p>
+    <p>Mao de obra: {{ total_labor }}</p>
+    <p>Total: {{ total_total }}</p>
+    <p>Total corrigido (preview INCC): {{ indexed_preview }}</p>
+    {% if incc_error %}
+      <p class="errors">INCC: {{ incc_error }}</p>
+    {% else %}
+      <p class="muted">
+        INCC code={{ incc_data.code|default:"-" }},
+        base={{ incc_data.base_month|default:"-" }},
+        ref={{ incc_data.ref_month|default:"-" }},
+        factor={{ incc_data.factor }},
+        apply_to={{ incc_data.apply_to }}
+      </p>
+    {% endif %}
+
+    {% if period.workflow_status != "DRAFT" %}
+      <h3>Snapshot congelado</h3>
+      <p>Snapshot material: {{ period.total_material_snapshot }}</p>
+      <p>Snapshot mao de obra: {{ period.total_labor_snapshot }}</p>
+      <p>Snapshot total: {{ period.total_total_snapshot }}</p>
+      <p>Snapshot total corrigido: {{ period.total_indexed_snapshot }}</p>
+      <p>
+        Snapshot INCC:
+        code={{ period.index_code_snapshot|default:"-" }},
+        base={{ period.index_base_month_snapshot|default:"-" }},
+        ref={{ period.index_ref_month_snapshot|default:"-" }},
+        factor={{ period.index_factor_snapshot }}
+      </p>
+    {% endif %}
+  </div>
+
+  {% if is_draft %}
+    <div class="actions">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="recalc">
+        <button type="submit">Recalcular</button>
+      </form>
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="finalize">
+        <button type="submit">Finalizar</button>
+      </form>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Linhas contratadas</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>EAP</th>
+          <th>Descricao</th>
+          <th>Local</th>
+          <th>Qtd periodo</th>
+          <th>Anterior</th>
+          <th>Acumulado</th>
+          <th>Saldo</th>
+          <th>% acumulado</th>
+          <th>Valor periodo</th>
+          <th>Justificativa</th>
+          <th>Acoes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in contracted_line_stats %}
+          <tr>
+            <td>{{ row.line.item.eap_code }}</td>
+            <td>{{ row.line.item.description }}</td>
+            <td>{{ row.line.location.code|default:"-" }}</td>
+            <td>{{ row.line.qty_period }}</td>
+            <td>{{ row.previous }}</td>
+            <td>{{ row.accumulated }}</td>
+            <td>{{ row.balance }}</td>
+            <td>{{ row.percent|floatformat:2 }}%</td>
+            <td>{{ row.period_value|floatformat:2 }}</td>
+            <td>{{ row.line.justification|default:"-" }}</td>
+            <td>
+              {% if is_draft %}
+                <a href="{% url 'billing:line_edit' row.line.id %}">Editar</a>
+                <a href="{% url 'billing:line_delete' row.line.id %}">Excluir</a>
+              {% else %}
+                -
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="11">Sem linhas contratadas.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if is_draft %}
+      <h3>Adicionar linha contratada</h3>
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="add_contracted">
+        {{ contracted_form.as_p }}
+        <button type="submit">Adicionar</button>
+      </form>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Linhas extras</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Descricao</th>
+          <th>Unidade</th>
+          <th>Local</th>
+          <th>Qtd</th>
+          <th>PU mat</th>
+          <th>PU mdo</th>
+          <th>Justificativa</th>
+          <th>Acoes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in extra_lines %}
+          <tr>
+            <td>{{ line.extra_description }}</td>
+            <td>{{ line.extra_unit.code|default:"-" }}</td>
+            <td>{{ line.location.code|default:"-" }}</td>
+            <td>{{ line.qty_period }}</td>
+            <td>{{ line.extra_pu_material }}</td>
+            <td>{{ line.extra_pu_labor }}</td>
+            <td>{{ line.justification|default:"-" }}</td>
+            <td>
+              {% if is_draft %}
+                <a href="{% url 'billing:line_edit' line.id %}">Editar</a>
+                <a href="{% url 'billing:line_delete' line.id %}">Excluir</a>
+              {% else %}
+                -
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="8">Sem linhas extras.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if is_draft %}
+      <h3>Adicionar linha extra</h3>
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="add_extra">
+        {{ extra_form.as_p }}
+        <button type="submit">Adicionar extra</button>
+      </form>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Pagamentos / abatimentos</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Data</th>
+          <th>Valor</th>
+          <th>Metodo</th>
+          <th>Status</th>
+          <th>Referencia</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for settlement in settlements %}
+          <tr>
+            <td>{{ settlement.event_date }}</td>
+            <td>{{ settlement.amount }}</td>
+            <td>{{ settlement.method }}</td>
+            <td>{{ settlement.status }}</td>
+            <td>{{ settlement.reference|default:"-" }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5">Sem pagamentos.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h3>Novo pagamento/abatimento</h3>
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="add_settlement">
+      {{ settlement_form.as_p }}
+      <button type="submit">Registrar</button>
+    </form>
+  </div>
+{% endblock %}

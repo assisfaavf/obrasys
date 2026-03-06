@@ -1,0 +1,13 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Nova medicao{% endblock %}
+
+{% block content %}
+  <h1>Nova medicao - {{ project.name }}</h1>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Criar medicao</button>
+  </form>
+  <p><a href="{% url 'billing:project_detail' project.id %}">Voltar para obra</a></p>
+{% endblock %}

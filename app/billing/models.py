@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -88,6 +89,41 @@ class MeasurementPeriod(models.Model):
     def __str__(self) -> str:
         return f"{self.project.name} - M{self.number}"
 
+    SNAPSHOT_FIELDS = (
+        "total_material_snapshot",
+        "total_labor_snapshot",
+        "total_total_snapshot",
+        "total_indexed_snapshot",
+        "index_code_snapshot",
+        "index_base_month_snapshot",
+        "index_ref_month_snapshot",
+        "index_factor_snapshot",
+    )
+
+    def clean(self):
+        super().clean()
+        if not self.pk:
+            return
+
+        previous = MeasurementPeriod.objects.filter(pk=self.pk).first()
+        if not previous:
+            return
+
+        if previous.workflow_status != WorkflowStatus.DRAFT:
+            changed_fields = [
+                field
+                for field in self.SNAPSHOT_FIELDS
+                if getattr(previous, field) != getattr(self, field)
+            ]
+            if changed_fields:
+                raise ValidationError(
+                    "Snapshots nao podem ser alterados apos sair de DRAFT."
+                )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
 
 class MeasurementLine(models.Model):
     period = models.ForeignKey(
@@ -131,6 +167,46 @@ class MeasurementLine(models.Model):
     def __str__(self) -> str:
         return f"{self.period} - {self.line_kind}"
 
+    def clean(self):
+        super().clean()
+
+        if not self.period_id:
+            return
+
+        period_status = (
+            MeasurementPeriod.objects.filter(pk=self.period_id)
+            .values_list("workflow_status", flat=True)
+            .first()
+        )
+        if period_status != WorkflowStatus.DRAFT:
+            raise ValidationError("Linhas so podem ser editadas em periodos DRAFT.")
+
+        if self.qty_period is not None and self.qty_period < 0:
+            raise ValidationError("qty_period deve ser >= 0.")
+
+        if self.line_kind == MeasurementLineKind.CONTRACTED and not self.item_id:
+            raise ValidationError("Linhas CONTRACTED exigem item.")
+
+        if self.line_kind == MeasurementLineKind.EXTRA:
+            if not self.extra_description:
+                raise ValidationError("Linhas EXTRA exigem descricao.")
+            if not self.extra_unit_id:
+                raise ValidationError("Linhas EXTRA exigem unidade.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        period_status = (
+            MeasurementPeriod.objects.filter(pk=self.period_id)
+            .values_list("workflow_status", flat=True)
+            .first()
+        )
+        if period_status != WorkflowStatus.DRAFT:
+            raise ValidationError("Linhas so podem ser removidas em periodos DRAFT.")
+        super().delete(*args, **kwargs)
+
 
 class MeasurementSettlement(models.Model):
     period = models.ForeignKey(
@@ -154,3 +230,16 @@ class MeasurementSettlement(models.Model):
 
     def __str__(self) -> str:
         return f"{self.period} - {self.amount}"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        from billing.services.measurement_calc import update_financial_status
+
+        update_financial_status(self.period_id)
+
+    def delete(self, *args, **kwargs):
+        period_id = self.period_id
+        super().delete(*args, **kwargs)
+        from billing.services.measurement_calc import update_financial_status
+
+        update_financial_status(period_id)
