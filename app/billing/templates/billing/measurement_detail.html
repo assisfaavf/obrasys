@@ -12,6 +12,13 @@
 
   <div class="actions">
     <a href="{% url 'billing:project_detail' period.project.id %}">Voltar para obra</a>
+    {% if not is_draft %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="generate_pdf_timbrado">
+        <button type="submit">Gerar PDF Timbrado</button>
+      </form>
+    {% endif %}
   </div>
 
   <div class="card">

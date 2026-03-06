@@ -4,6 +4,7 @@ from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.exceptions import ValidationError
 from django.db.models import Max
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
 from billing.forms import ExtraLineForm, MeasurementLineForm, MeasurementPeriodForm, SettlementForm
@@ -15,6 +16,8 @@ from billing.services.measurement_calc import (
     get_item_cumulative,
 )
 from core.models import Project
+from exports.models import ExportStatus
+from exports.services import generate_pdf_boletim
 from pricing.models import AdjustmentApplyTo
 
 
@@ -152,6 +155,21 @@ def measurement_detail_view(request, measurement_id: int):
         elif action == "recalc":
             messages.success(request, "Recalculo concluido.")
             return redirect("billing:measurement_detail", measurement_id=period.id)
+
+        elif action == "generate_pdf_timbrado":
+            export_record, pdf_path = generate_pdf_boletim(period.id)
+            if export_record.status != ExportStatus.OK or pdf_path is None:
+                messages.error(
+                    request,
+                    f"Falha ao gerar PDF timbrado: {export_record.error_message or 'erro desconhecido'}",
+                )
+                return redirect("billing:measurement_detail", measurement_id=period.id)
+
+            return FileResponse(
+                open(pdf_path, "rb"),
+                as_attachment=True,
+                filename=pdf_path.name,
+            )
 
     lines = list(
         period.lines.select_related("item", "location", "extra_unit").order_by("id")

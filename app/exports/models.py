@@ -5,6 +5,7 @@ class ExportType(models.TextChoices):
     SIENGE_MASTER = "SIENGE_MASTER", "Sienge master"
     SIENGE_SNAPSHOT = "SIENGE_SNAPSHOT", "Sienge snapshot"
     DOCX_TIMBRADO = "DOCX_TIMBRADO", "Docx timbrado"
+    PDF_TIMBRADO = "PDF_TIMBRADO", "Pdf timbrado"
 
 
 class ExportStatus(models.TextChoices):

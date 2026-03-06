@@ -9,6 +9,7 @@ venv/
 app/db.sqlite3
 app/media/
 app/staticfiles/
+assets/exports/
 
 # IDE
 .vscode/
