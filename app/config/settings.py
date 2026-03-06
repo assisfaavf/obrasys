@@ -6,7 +6,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env = environ.Env(
     DJANGO_DEBUG=(bool, False),
 )
-
+#Teste
 # Lê o .env da raiz do repositório quando você rodar fora do Docker.
 # (No Docker, as variáveis já entram via docker-compose env_file.)
 env_file = BASE_DIR.parent / ".env"   # aponta para /app/.. => raiz do repo montada
