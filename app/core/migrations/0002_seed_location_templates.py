@@ -9,7 +9,7 @@ def seed_location_templates(apps, schema_editor):
 
     templates = [
         (
-            "Predio residencial (Palatium)",
+            "Prédio residencial (Palatium)",
             [
                 ("SS1", "Subsolo 1", 1),
                 ("TER", "Terreo", 2),
@@ -43,7 +43,7 @@ def seed_location_templates(apps, schema_editor):
 def unseed_location_templates(apps, schema_editor):
     LocationTemplate = apps.get_model("core", "LocationTemplate")
     LocationTemplate.objects.filter(
-        name__in=["Predio residencial (Palatium)", "Obra simples"]
+        name__in=["Prédio residencial (Palatium)", "Obra simples"]
     ).delete()
 
 
