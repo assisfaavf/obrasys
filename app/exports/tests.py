@@ -76,13 +76,14 @@ class PdfBoletimServiceTests(TestCase):
     def test_generate_pdf_boletim_creates_export_record(self, run_mock):
         run_mock.side_effect = self._fake_soffice_run
 
-        export_record, pdf_path = generate_pdf_boletim(self.period.id)
+        export_record, pdf_path = generate_pdf_boletim(self.period.id, layout="portrait")
 
         self.assertEqual(export_record.status, ExportStatus.OK)
         self.assertEqual(export_record.export_type, ExportType.PDF_TIMBRADO)
         self.assertIsNotNone(pdf_path)
         self.assertTrue(Path(pdf_path).exists())
         self.assertIn(str(self.project.id), export_record.file_path)
+        self.assertTrue(str(export_record.file_path).endswith("_portrait.pdf"))
         self.assertTrue(
             MeasurementExport.objects.filter(
                 period=self.period,
@@ -90,3 +91,13 @@ class PdfBoletimServiceTests(TestCase):
                 status=ExportStatus.OK,
             ).exists()
         )
+
+    @patch("exports.services.pdf_boletim.get_template_path")
+    def test_generate_pdf_boletim_landscape_missing_template_returns_error(self, template_mock):
+        template_mock.side_effect = FileNotFoundError("missing")
+
+        export_record, pdf_path = generate_pdf_boletim(self.period.id, layout="landscape")
+
+        self.assertEqual(export_record.status, ExportStatus.ERROR)
+        self.assertIsNone(pdf_path)
+        self.assertIn("modelo_boletim_landscape.docx", export_record.error_message)

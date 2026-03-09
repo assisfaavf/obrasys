@@ -156,21 +156,6 @@ def measurement_detail_view(request, measurement_id: int):
             messages.success(request, "Recalculo concluido.")
             return redirect("billing:measurement_detail", measurement_id=period.id)
 
-        elif action == "generate_pdf_timbrado":
-            export_record, pdf_path = generate_pdf_boletim(period.id)
-            if export_record.status != ExportStatus.OK or pdf_path is None:
-                messages.error(
-                    request,
-                    f"Falha ao gerar PDF timbrado: {export_record.error_message or 'erro desconhecido'}",
-                )
-                return redirect("billing:measurement_detail", measurement_id=period.id)
-
-            return FileResponse(
-                open(pdf_path, "rb"),
-                as_attachment=True,
-                filename=pdf_path.name,
-            )
-
     lines = list(
         period.lines.select_related("item", "location", "extra_unit").order_by("id")
     )
@@ -315,4 +300,24 @@ def measurement_line_delete_view(request, line_id: int):
             "line": line,
             "period": period,
         },
+    )
+
+
+@staff_member_required
+def measurement_export_pdf_view(request, measurement_id: int):
+    period = get_object_or_404(MeasurementPeriod, pk=measurement_id)
+    layout = request.GET.get("layout", "landscape")
+    export_record, pdf_path = generate_pdf_boletim(period.id, layout=layout)
+
+    if export_record.status != ExportStatus.OK or pdf_path is None:
+        messages.error(
+            request,
+            f"Falha ao gerar PDF ({layout}): {export_record.error_message or 'erro desconhecido'}",
+        )
+        return redirect("billing:measurement_detail", measurement_id=period.id)
+
+    return FileResponse(
+        open(pdf_path, "rb"),
+        as_attachment=True,
+        filename=pdf_path.name,
     )
