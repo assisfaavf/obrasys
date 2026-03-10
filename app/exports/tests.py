@@ -1,4 +1,3 @@
-import subprocess
 import tempfile
 from datetime import date
 from decimal import Decimal
@@ -6,16 +5,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase
+from openpyxl import Workbook, load_workbook
 
 from billing.models import MeasurementLine, MeasurementPeriod
 from billing.services.measurement_calc import finalize_period
 from catalog.models import BudgetItem, Unit
 from core.models import Client, Project
 from exports.models import ExportStatus, ExportType, MeasurementExport
-from exports.services.pdf_boletim import convert_docx_to_pdf, generate_pdf_boletim
+from exports.services.xlsx_boletim import generate_xlsx_boletim
 
 
-class PdfBoletimServiceTests(TestCase):
+class XlsxBoletimServiceTests(TestCase):
     def setUp(self):
         self.client_obj = Client.objects.create(name="Cliente Export")
         self.project = Project.objects.create(name="Projeto Export", client=self.client_obj)
@@ -43,61 +43,109 @@ class PdfBoletimServiceTests(TestCase):
             qty_period=Decimal("5"),
             justification="Linha base",
         )
+        MeasurementLine.objects.create(
+            period=self.period,
+            line_kind="EXTRA",
+            extra_description="Servico extra",
+            extra_unit=self.unit,
+            qty_period=Decimal("2"),
+            extra_pu_material=Decimal("12"),
+            extra_pu_labor=Decimal("8"),
+            justification="Necessidade adicional",
+        )
         finalize_period(self.period.id)
         self.period.refresh_from_db()
 
-    def _fake_soffice_run(self, command, check, capture_output, text):
-        outdir = Path(command[command.index("--outdir") + 1])
-        docx_path = Path(command[-1])
-        pdf_path = outdir / f"{docx_path.stem}.pdf"
-        pdf_path.write_bytes(b"%PDF-1.4\n%fake\n")
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=0,
-            stdout="converted",
-            stderr="",
-        )
+    def _create_template(self, path: Path) -> Path:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Boletim"
+        sheet["A1"] = "Template base"
+        workbook.save(path)
+        return path
 
-    @patch("exports.services.pdf_boletim.subprocess.run")
-    def test_convert_docx_to_pdf_calls_subprocess(self, run_mock):
-        run_mock.side_effect = self._fake_soffice_run
+    def test_generate_xlsx_boletim_creates_file(self):
+        with tempfile.TemporaryDirectory(prefix="xlsx-template-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_template(temp_root / "boletim_template.xlsx")
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
 
-        with tempfile.TemporaryDirectory(prefix="test-convert-") as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            docx_path = tmp_path / "sample.docx"
-            docx_path.write_bytes(b"fake docx")
+            with patch("exports.services.xlsx_boletim.get_template_path", return_value=template_path), patch(
+                "exports.services.xlsx_boletim.get_exports_dir", return_value=exports_dir
+            ):
+                export_record, output_path = generate_xlsx_boletim(self.period.id)
 
-            pdf_path = convert_docx_to_pdf(docx_path, tmp_path)
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            self.assertIsNotNone(output_path)
+            self.assertTrue(Path(output_path).exists())
+            self.assertTrue(str(output_path).endswith(".xlsx"))
 
-        self.assertTrue(run_mock.called)
-        self.assertTrue(pdf_path.name.endswith(".pdf"))
+            workbook = load_workbook(output_path)
+            sheet = workbook[workbook.sheetnames[0]]
+            self.assertEqual(sheet["B1"].value, "BOLETIM DE MEDICAO")
+            self.assertEqual(sheet["D3"].value, self.project.name)
 
-    @patch("exports.services.pdf_boletim.subprocess.run")
-    def test_generate_pdf_boletim_creates_export_record(self, run_mock):
-        run_mock.side_effect = self._fake_soffice_run
+    def test_generate_xlsx_boletim_creates_measurement_export_record(self):
+        with tempfile.TemporaryDirectory(prefix="xlsx-export-record-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_template(temp_root / "boletim_template.xlsx")
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
 
-        export_record, pdf_path = generate_pdf_boletim(self.period.id, layout="portrait")
+            with patch("exports.services.xlsx_boletim.get_template_path", return_value=template_path), patch(
+                "exports.services.xlsx_boletim.get_exports_dir", return_value=exports_dir
+            ):
+                export_record, _ = generate_xlsx_boletim(self.period.id)
 
-        self.assertEqual(export_record.status, ExportStatus.OK)
-        self.assertEqual(export_record.export_type, ExportType.PDF_TIMBRADO)
-        self.assertIsNotNone(pdf_path)
-        self.assertTrue(Path(pdf_path).exists())
-        self.assertIn(str(self.project.id), export_record.file_path)
-        self.assertTrue(str(export_record.file_path).endswith("_portrait.pdf"))
-        self.assertTrue(
-            MeasurementExport.objects.filter(
-                period=self.period,
-                export_type=ExportType.PDF_TIMBRADO,
-                status=ExportStatus.OK,
-            ).exists()
-        )
+            self.assertEqual(export_record.export_type, ExportType.XLSX_BOLETIM)
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            self.assertTrue(export_record.file_path.endswith(".xlsx"))
+            self.assertTrue(
+                MeasurementExport.objects.filter(
+                    period=self.period,
+                    export_type=ExportType.XLSX_BOLETIM,
+                    status=ExportStatus.OK,
+                ).exists()
+            )
 
-    @patch("exports.services.pdf_boletim.get_template_path")
-    def test_generate_pdf_boletim_landscape_missing_template_returns_error(self, template_mock):
+    @patch("exports.services.xlsx_boletim.get_template_path")
+    def test_generate_xlsx_boletim_missing_template_returns_error(self, template_mock):
         template_mock.side_effect = FileNotFoundError("missing")
 
-        export_record, pdf_path = generate_pdf_boletim(self.period.id, layout="landscape")
+        export_record, output_path = generate_xlsx_boletim(self.period.id)
 
         self.assertEqual(export_record.status, ExportStatus.ERROR)
-        self.assertIsNone(pdf_path)
-        self.assertIn("modelo_boletim_landscape.docx", export_record.error_message)
+        self.assertEqual(export_record.export_type, ExportType.XLSX_BOLETIM)
+        self.assertIsNone(output_path)
+        self.assertIn("boletim_template.xlsx", export_record.error_message)
+
+    def test_generate_xlsx_boletim_blocks_draft_period(self):
+        draft_period = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=2,
+            ref_month=date(2026, 3, 1),
+            start_date=date(2026, 3, 1),
+            end_date=date(2026, 3, 31),
+        )
+        MeasurementLine.objects.create(
+            period=draft_period,
+            line_kind="CONTRACTED",
+            item=self.item,
+            qty_period=Decimal("1"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="xlsx-draft-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_template(temp_root / "boletim_template.xlsx")
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch("exports.services.xlsx_boletim.get_template_path", return_value=template_path), patch(
+                "exports.services.xlsx_boletim.get_exports_dir", return_value=exports_dir
+            ):
+                export_record, output_path = generate_xlsx_boletim(draft_period.id)
+
+        self.assertEqual(export_record.status, ExportStatus.ERROR)
+        self.assertIsNone(output_path)
+        self.assertIn("DRAFT", export_record.error_message)

@@ -17,7 +17,7 @@ from billing.services.measurement_calc import (
 )
 from core.models import Project
 from exports.models import ExportStatus
-from exports.services import generate_pdf_boletim
+from exports.services import generate_xlsx_boletim
 from pricing.models import AdjustmentApplyTo
 
 
@@ -304,20 +304,19 @@ def measurement_line_delete_view(request, line_id: int):
 
 
 @staff_member_required
-def measurement_export_pdf_view(request, measurement_id: int):
+def measurement_export_xlsx_view(request, measurement_id: int):
     period = get_object_or_404(MeasurementPeriod, pk=measurement_id)
-    layout = request.GET.get("layout", "landscape")
-    export_record, pdf_path = generate_pdf_boletim(period.id, layout=layout)
+    export_record, xlsx_path = generate_xlsx_boletim(period.id)
 
-    if export_record.status != ExportStatus.OK or pdf_path is None:
+    if export_record.status != ExportStatus.OK or xlsx_path is None:
         messages.error(
             request,
-            f"Falha ao gerar PDF ({layout}): {export_record.error_message or 'erro desconhecido'}",
+            f"Falha ao gerar boletim Excel: {export_record.error_message or 'erro desconhecido'}",
         )
         return redirect("billing:measurement_detail", measurement_id=period.id)
 
     return FileResponse(
-        open(pdf_path, "rb"),
+        open(xlsx_path, "rb"),
         as_attachment=True,
-        filename=pdf_path.name,
+        filename=xlsx_path.name,
     )

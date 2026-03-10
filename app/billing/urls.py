@@ -14,9 +14,9 @@ urlpatterns = [
     ),
     path("measurements/<int:measurement_id>/", views.measurement_detail_view, name="measurement_detail"),
     path(
-        "measurements/<int:measurement_id>/export/pdf",
-        views.measurement_export_pdf_view,
-        name="measurement_export_pdf",
+        "measurements/<int:measurement_id>/export/xlsx",
+        views.measurement_export_xlsx_view,
+        name="measurement_export_xlsx",
     ),
     path("measurement-lines/<int:line_id>/edit/", views.measurement_line_edit_view, name="line_edit"),
     path("measurement-lines/<int:line_id>/delete/", views.measurement_line_delete_view, name="line_delete"),

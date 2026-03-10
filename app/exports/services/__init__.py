@@ -1,3 +1,3 @@
-from exports.services.pdf_boletim import convert_docx_to_pdf, generate_pdf_boletim
+from exports.services.xlsx_boletim import generate_xlsx_boletim
 
-__all__ = ["generate_pdf_boletim", "convert_docx_to_pdf"]
+__all__ = ["generate_xlsx_boletim"]
