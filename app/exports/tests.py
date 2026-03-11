@@ -1,3 +1,4 @@
+import base64
 import tempfile
 from datetime import date
 from decimal import Decimal
@@ -64,14 +65,46 @@ class XlsxBoletimServiceTests(TestCase):
         workbook.save(path)
         return path
 
+    def _create_logo(self, path: Path) -> Path:
+        png_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Yw3QAAAAASUVORK5CYII="
+        path.write_bytes(base64.b64decode(png_base64))
+        return path
+
+    def _template_side_effect(self, template_path: Path, logo_path: Path):
+        def _resolver(template_name: str) -> Path:
+            if template_name == "boletim_template.xlsx":
+                return template_path
+            if template_name == "Logo-rem.png":
+                return logo_path
+            raise FileNotFoundError(template_name)
+
+        return _resolver
+
+    def _create_template_with_merged_cells(self, path: Path) -> Path:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Boletim"
+        sheet["A1"] = "Cabecalho mesclado"
+        sheet.merge_cells("A1:D1")
+        sheet["B3"] = "Meta"
+        sheet.merge_cells("B3:E3")
+        sheet["I3"] = "Meta"
+        sheet.merge_cells("I3:K3")
+        workbook.save(path)
+        return path
+
     def test_generate_xlsx_boletim_creates_file(self):
         with tempfile.TemporaryDirectory(prefix="xlsx-template-") as tmp_dir:
             temp_root = Path(tmp_dir)
             template_path = self._create_template(temp_root / "boletim_template.xlsx")
+            logo_path = self._create_logo(temp_root / "Logo-rem.png")
             exports_dir = temp_root / "exports"
             exports_dir.mkdir(parents=True, exist_ok=True)
 
-            with patch("exports.services.xlsx_boletim.get_template_path", return_value=template_path), patch(
+            with patch(
+                "exports.services.xlsx_boletim.get_template_path",
+                side_effect=self._template_side_effect(template_path, logo_path),
+            ), patch(
                 "exports.services.xlsx_boletim.get_exports_dir", return_value=exports_dir
             ):
                 export_record, output_path = generate_xlsx_boletim(self.period.id)
@@ -83,17 +116,22 @@ class XlsxBoletimServiceTests(TestCase):
 
             workbook = load_workbook(output_path)
             sheet = workbook[workbook.sheetnames[0]]
-            self.assertEqual(sheet["B1"].value, "BOLETIM DE MEDICAO")
-            self.assertEqual(sheet["D3"].value, self.project.name)
+            self.assertEqual(sheet["B2"].value, "BOLETIM DE MEDICAO")
+            self.assertEqual(sheet["D4"].value, self.project.name)
+            self.assertGreaterEqual(len(sheet._images), 1)
 
     def test_generate_xlsx_boletim_creates_measurement_export_record(self):
         with tempfile.TemporaryDirectory(prefix="xlsx-export-record-") as tmp_dir:
             temp_root = Path(tmp_dir)
             template_path = self._create_template(temp_root / "boletim_template.xlsx")
+            logo_path = self._create_logo(temp_root / "Logo-rem.png")
             exports_dir = temp_root / "exports"
             exports_dir.mkdir(parents=True, exist_ok=True)
 
-            with patch("exports.services.xlsx_boletim.get_template_path", return_value=template_path), patch(
+            with patch(
+                "exports.services.xlsx_boletim.get_template_path",
+                side_effect=self._template_side_effect(template_path, logo_path),
+            ), patch(
                 "exports.services.xlsx_boletim.get_exports_dir", return_value=exports_dir
             ):
                 export_record, _ = generate_xlsx_boletim(self.period.id)
@@ -108,6 +146,26 @@ class XlsxBoletimServiceTests(TestCase):
                     status=ExportStatus.OK,
                 ).exists()
             )
+
+    def test_generate_xlsx_boletim_succeeds_with_merged_cells_in_template(self):
+        with tempfile.TemporaryDirectory(prefix="xlsx-merged-template-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_template_with_merged_cells(temp_root / "boletim_template.xlsx")
+            logo_path = self._create_logo(temp_root / "Logo-rem.png")
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.xlsx_boletim.get_template_path",
+                side_effect=self._template_side_effect(template_path, logo_path),
+            ), patch(
+                "exports.services.xlsx_boletim.get_exports_dir", return_value=exports_dir
+            ):
+                export_record, output_path = generate_xlsx_boletim(self.period.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            self.assertIsNotNone(output_path)
+            self.assertTrue(Path(output_path).exists())
 
     @patch("exports.services.xlsx_boletim.get_template_path")
     def test_generate_xlsx_boletim_missing_template_returns_error(self, template_mock):
@@ -149,3 +207,77 @@ class XlsxBoletimServiceTests(TestCase):
         self.assertEqual(export_record.status, ExportStatus.ERROR)
         self.assertIsNone(output_path)
         self.assertIn("DRAFT", export_record.error_message)
+
+    def test_generate_xlsx_boletim_separates_contracted_effective_and_excess(self):
+        item_excess = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="2.1",
+            description="Item com excedente",
+            unit=self.unit,
+            qty_contracted=Decimal("100"),
+            pu_material=Decimal("10"),
+            pu_labor=Decimal("5"),
+        )
+        period_prev = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=2,
+            ref_month=date(2026, 3, 1),
+            start_date=date(2026, 3, 1),
+            end_date=date(2026, 3, 31),
+        )
+        MeasurementLine.objects.create(
+            period=period_prev,
+            line_kind="CONTRACTED",
+            item=item_excess,
+            qty_period=Decimal("80"),
+        )
+        finalize_period(period_prev.id)
+
+        period_current = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=3,
+            ref_month=date(2026, 4, 1),
+            start_date=date(2026, 4, 1),
+            end_date=date(2026, 4, 30),
+        )
+        MeasurementLine.objects.create(
+            period=period_current,
+            line_kind="CONTRACTED",
+            item=item_excess,
+            qty_period=Decimal("30"),
+            excess_justification="Aprovacao tecnica",
+        )
+        finalize_period(period_current.id)
+
+        with tempfile.TemporaryDirectory(prefix="xlsx-excess-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_template(temp_root / "boletim_template.xlsx")
+            logo_path = self._create_logo(temp_root / "Logo-rem.png")
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.xlsx_boletim.get_template_path",
+                side_effect=self._template_side_effect(template_path, logo_path),
+            ), patch(
+                "exports.services.xlsx_boletim.get_exports_dir", return_value=exports_dir
+            ):
+                export_record, output_path = generate_xlsx_boletim(period_current.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            workbook = load_workbook(output_path)
+            sheet = workbook[workbook.sheetnames[0]]
+
+            contracted_row = None
+            overflow_row = None
+            for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, values_only=True):
+                if len(row) > 8 and row[1] == "2.1":
+                    contracted_row = row
+                if len(row) > 8 and row[3] == "2.1":
+                    overflow_row = row
+
+            self.assertIsNotNone(contracted_row)
+            self.assertIsNotNone(overflow_row)
+            self.assertEqual(Decimal(str(contracted_row[7])), Decimal("20"))
+            self.assertEqual(Decimal(str(overflow_row[7])), Decimal("10"))
+            self.assertEqual(overflow_row[9], "Aprovacao tecnica")

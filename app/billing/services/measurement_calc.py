@@ -2,7 +2,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import DecimalField, ExpressionWrapper, F, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -29,6 +29,10 @@ def get_item_cumulative(project, item_id: int, up_to_period_number: int) -> Deci
     if up_to_period_number <= 0:
         return Decimal("0")
 
+    effective_qty_expr = ExpressionWrapper(
+        F("qty_period") - Coalesce(F("excess_qty"), Value(Decimal("0"))),
+        output_field=DecimalField(max_digits=14, decimal_places=3),
+    )
     qty = (
         MeasurementLine.objects.filter(
             period__project=project,
@@ -37,10 +41,77 @@ def get_item_cumulative(project, item_id: int, up_to_period_number: int) -> Deci
             period__number__lte=up_to_period_number,
         )
         .exclude(period__workflow_status=WorkflowStatus.CANCELLED)
-        .aggregate(total=Coalesce(Sum("qty_period"), Decimal("0")))
+        .aggregate(total=Coalesce(Sum(effective_qty_expr), Decimal("0")))
         .get("total")
     )
     return qty or Decimal("0")
+
+
+def split_contracted_and_excess(line: MeasurementLine) -> tuple[Decimal, Decimal, Decimal]:
+    qty_period = line.qty_period or Decimal("0")
+    if line.line_kind != MeasurementLineKind.CONTRACTED or not line.item_id:
+        return qty_period, Decimal("0"), Decimal("0")
+
+    previous = get_item_cumulative(line.period.project, line.item_id, line.period.number - 1)
+    contracted_qty = (line.item.qty_contracted if line.item else Decimal("0")) or Decimal("0")
+    saldo_antes = contracted_qty - previous
+
+    existing_lines = MeasurementLine.objects.filter(
+        period=line.period,
+        line_kind=MeasurementLineKind.CONTRACTED,
+        item_id=line.item_id,
+    )
+    if line.pk:
+        existing_lines = existing_lines.exclude(pk=line.pk)
+
+    # Estimate available saldo for this line assuming it is the last entered line.
+    for existing in existing_lines.order_by("id"):
+        existing_qty = existing.qty_period or Decimal("0")
+        consume = min(existing_qty, max(saldo_antes, Decimal("0")))
+        saldo_antes -= consume
+
+    available_qty = max(saldo_antes, Decimal("0"))
+    contracted_effective_qty = min(qty_period, available_qty)
+    excess_qty = max(qty_period - available_qty, Decimal("0"))
+    return contracted_effective_qty, excess_qty, saldo_antes
+
+
+def refresh_period_excess(period_id: int) -> None:
+    lines = list(
+        MeasurementLine.objects.select_related("period__project", "item")
+        .filter(period_id=period_id, line_kind=MeasurementLineKind.CONTRACTED)
+        .order_by("item_id", "id")
+    )
+    grouped: dict[int, list[MeasurementLine]] = {}
+    for line in lines:
+        if not line.item_id or line.item is None:
+            continue
+        grouped.setdefault(line.item_id, []).append(line)
+
+    for item_id, item_lines in grouped.items():
+        first_line = item_lines[0]
+        previous = get_item_cumulative(first_line.period.project, item_id, first_line.period.number - 1)
+        contracted_qty = (first_line.item.qty_contracted or Decimal("0")) if first_line.item else Decimal("0")
+        remaining = contracted_qty - previous
+
+        for line in item_lines:
+            qty_period = line.qty_period or Decimal("0")
+            available_qty = max(remaining, Decimal("0"))
+            effective_qty = min(qty_period, available_qty)
+            excess_qty = max(qty_period - effective_qty, Decimal("0"))
+            remaining -= effective_qty
+
+            excess_justification = (line.excess_justification or "").strip()
+            if excess_qty == 0:
+                excess_justification = ""
+
+            if line.excess_qty != excess_qty or (line.excess_justification or "") != excess_justification:
+                MeasurementLine.objects.filter(pk=line.pk).update(
+                    excess_qty=excess_qty,
+                    excess_justification=excess_justification,
+                )
+                line.excess_qty = excess_qty
+                line.excess_justification = excess_justification
 
 
 def compute_period_totals(period_id: int) -> tuple[Decimal, Decimal, Decimal]:
@@ -134,13 +205,6 @@ def validate_finalize(period_id: int) -> list[str]:
         errors.append("Nao pode finalizar sem linhas.")
         return errors
 
-    period_qty_by_item: dict[int, Decimal] = {}
-    for line in lines:
-        if line.line_kind == MeasurementLineKind.CONTRACTED and line.item_id:
-            period_qty_by_item[line.item_id] = period_qty_by_item.get(line.item_id, Decimal("0")) + (
-                line.qty_period or Decimal("0")
-            )
-
     for line in lines:
         if line.line_kind == MeasurementLineKind.CONTRACTED:
             qty = line.qty_period or Decimal("0")
@@ -151,16 +215,11 @@ def validate_finalize(period_id: int) -> list[str]:
                 errors.append(f"Linha {line.id}: item obrigatorio para CONTRACTED.")
                 continue
 
-            previous = get_item_cumulative(period.project, line.item_id, period.number - 1)
-            period_item_qty = period_qty_by_item.get(line.item_id, Decimal("0"))
-            accumulated = previous + period_item_qty
-            contracted_qty = (line.item.qty_contracted if line.item else Decimal("0")) or Decimal("0")
-
-            overflow_happens_now = previous <= contracted_qty and accumulated > contracted_qty
-            if overflow_happens_now and not (line.justification or "").strip():
+            excess_qty = line.excess_qty or Decimal("0")
+            if excess_qty > 0 and not (line.excess_justification or "").strip():
                 errors.append(
                     f"Linha {line.id}: justificativa obrigatoria para excedente "
-                    f"(acumulado {accumulated} > contratado {contracted_qty})."
+                    f"(excedente {excess_qty})."
                 )
 
         if line.line_kind == MeasurementLineKind.EXTRA:
@@ -203,6 +262,7 @@ def finalize_period(period_id: int, user=None):
         if period.workflow_status != WorkflowStatus.DRAFT:
             raise ValidationError("Somente periodos em DRAFT podem ser finalizados.")
 
+        refresh_period_excess(period.id)
         errors = validate_finalize(period.id)
         if errors:
             raise ValidationError(errors)

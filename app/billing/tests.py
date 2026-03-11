@@ -1,12 +1,15 @@
 from datetime import date
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 
+from billing.forms import MeasurementPeriodForm
 from billing.models import FinancialStatus, MeasurementLine, MeasurementPeriod, MeasurementSettlement
 from billing.services.measurement_calc import (
     finalize_period,
     get_item_cumulative,
+    split_contracted_and_excess,
     update_financial_status,
 )
 from catalog.models import BudgetItem, Unit
@@ -125,3 +128,118 @@ class MeasurementCalcTests(TestCase):
         self.assertEqual(finalized.index_factor_snapshot, Decimal("1.200000"))
         self.assertEqual(finalized.total_total_snapshot, Decimal("30.00"))
         self.assertEqual(finalized.total_indexed_snapshot, Decimal("36.00"))
+
+    def test_split_contracted_and_excess_qty_less_than_saldo(self):
+        period_prev = self._create_period(1, date(2026, 1, 1))
+        MeasurementLine.objects.create(
+            period=period_prev,
+            line_kind="CONTRACTED",
+            item=self.item,
+            qty_period=Decimal("80"),
+        )
+        period = self._create_period(2, date(2026, 2, 1))
+        probe_line = MeasurementLine(
+            period=period,
+            line_kind="CONTRACTED",
+            item=self.item,
+            qty_period=Decimal("10"),
+        )
+
+        contracted_qty, excess_qty, saldo_antes = split_contracted_and_excess(probe_line)
+
+        self.assertEqual(saldo_antes, Decimal("20"))
+        self.assertEqual(contracted_qty, Decimal("10"))
+        self.assertEqual(excess_qty, Decimal("0"))
+
+    def test_split_contracted_and_excess_qty_equal_to_saldo(self):
+        period_prev = self._create_period(1, date(2026, 1, 1))
+        MeasurementLine.objects.create(
+            period=period_prev,
+            line_kind="CONTRACTED",
+            item=self.item,
+            qty_period=Decimal("80"),
+        )
+        period = self._create_period(2, date(2026, 2, 1))
+        probe_line = MeasurementLine(
+            period=period,
+            line_kind="CONTRACTED",
+            item=self.item,
+            qty_period=Decimal("20"),
+        )
+
+        contracted_qty, excess_qty, saldo_antes = split_contracted_and_excess(probe_line)
+
+        self.assertEqual(saldo_antes, Decimal("20"))
+        self.assertEqual(contracted_qty, Decimal("20"))
+        self.assertEqual(excess_qty, Decimal("0"))
+
+    def test_split_contracted_and_excess_qty_greater_than_saldo(self):
+        period_prev = self._create_period(1, date(2026, 1, 1))
+        MeasurementLine.objects.create(
+            period=period_prev,
+            line_kind="CONTRACTED",
+            item=self.item,
+            qty_period=Decimal("80"),
+        )
+        period = self._create_period(2, date(2026, 2, 1))
+        probe_line = MeasurementLine(
+            period=period,
+            line_kind="CONTRACTED",
+            item=self.item,
+            qty_period=Decimal("30"),
+        )
+
+        contracted_qty, excess_qty, saldo_antes = split_contracted_and_excess(probe_line)
+
+        self.assertEqual(saldo_antes, Decimal("20"))
+        self.assertEqual(contracted_qty, Decimal("20"))
+        self.assertEqual(excess_qty, Decimal("10"))
+
+    def test_finalize_period_blocks_when_excess_has_no_justification(self):
+        period_prev = self._create_period(1, date(2026, 1, 1))
+        MeasurementLine.objects.create(
+            period=period_prev,
+            line_kind="CONTRACTED",
+            item=self.item,
+            qty_period=Decimal("80"),
+        )
+        period = self._create_period(2, date(2026, 2, 1))
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind="CONTRACTED",
+            item=self.item,
+            qty_period=Decimal("30"),
+        )
+
+        with self.assertRaises(ValidationError) as exc:
+            finalize_period(period.id)
+
+        self.assertIn("justificativa obrigatoria para excedente", str(exc.exception).lower())
+
+
+class MeasurementPeriodFormTests(TestCase):
+    def test_ref_month_accepts_mm_yyyy_and_normalizes_day_one(self):
+        form = MeasurementPeriodForm(
+            data={
+                "ref_month": "03/2026",
+                "start_date": "2026-03-01",
+                "end_date": "2026-03-31",
+                "notes": "",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors.as_text())
+        self.assertEqual(form.cleaned_data["ref_month"], date(2026, 3, 1))
+
+    def test_ref_month_accepts_html_month_input(self):
+        form = MeasurementPeriodForm(
+            data={
+                "ref_month": "2026-04",
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-30",
+                "notes": "",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors.as_text())
+        self.assertEqual(form.cleaned_data["ref_month"], date(2026, 4, 1))

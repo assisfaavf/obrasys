@@ -6,7 +6,9 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils.text import slugify
 from openpyxl import load_workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from billing.models import MeasurementLineKind, MeasurementPeriod, WorkflowStatus
@@ -15,6 +17,7 @@ from exports.models import ExportStatus, ExportType, MeasurementExport
 from utils.paths import get_exports_dir, get_template_path
 
 TEMPLATE_NAME = "boletim_template.xlsx"
+LOGO_NAME = "Logo-rem.png"
 WORK_START_COL = 2  # B
 WORK_END_COL = 13  # M
 TABLE_FONT_SIZE = 9
@@ -120,14 +123,8 @@ def _build_period_data(period: MeasurementPeriod) -> dict:
         if line.line_kind == MeasurementLineKind.EXTRA and _to_decimal(line.qty_period) > 0
     ]
 
-    period_qty_by_item: dict[int, Decimal] = {}
-    for line in contracted_lines:
-        period_qty_by_item[line.item_id] = period_qty_by_item.get(line.item_id, Decimal("0")) + _to_decimal(
-            line.qty_period
-        )
-
     contracted_rows_raw: list[dict] = []
-    overflow_by_item: dict[int, dict] = {}
+    overflow_rows_raw: list[dict] = []
 
     contracted_lines.sort(
         key=lambda line: (
@@ -139,45 +136,58 @@ def _build_period_data(period: MeasurementPeriod) -> dict:
 
     for line in contracted_lines:
         item = line.item
+        if item is None:
+            continue
         previous = get_item_cumulative(period.project, line.item_id, period.number - 1)
         contracted_qty = _to_decimal(item.qty_contracted)
         period_qty = _to_decimal(line.qty_period)
-        accumulated = previous + period_qty_by_item.get(line.item_id, Decimal("0"))
+        excess_qty = max(_to_decimal(line.excess_qty), Decimal("0"))
+        contracted_effective_qty = max(period_qty - excess_qty, Decimal("0"))
+        accumulated = previous + contracted_effective_qty
         percent = Decimal("0")
         if contracted_qty > 0:
             percent = accumulated / contracted_qty
-        total_period = period_qty * (_to_decimal(item.pu_material) + _to_decimal(item.pu_labor))
+        unit_total = _to_decimal(item.pu_material) + _to_decimal(item.pu_labor)
+        total_period = contracted_effective_qty * unit_total
 
-        contracted_rows_raw.append(
-            {
-                "discipline": _resolve_discipline(line),
-                "values": [
-                    _to_text(item.eap_code),
-                    _to_text(item.description),
-                    _to_text(getattr(line.location, "code", None)),
-                    _to_text(getattr(item.unit, "code", None)),
-                    contracted_qty,
-                    previous,
-                    period_qty,
-                    accumulated,
-                    percent,
-                    total_period,
-                ],
-            }
-        )
+        if contracted_effective_qty > 0:
+            contracted_rows_raw.append(
+                {
+                    "discipline": _resolve_discipline(line),
+                    "values": [
+                        _to_text(item.eap_code),
+                        _to_text(item.description),
+                        _to_text(getattr(line.location, "code", None)),
+                        _to_text(getattr(item.unit, "code", None)),
+                        contracted_qty,
+                        previous,
+                        contracted_effective_qty,
+                        accumulated,
+                        percent,
+                        total_period,
+                    ],
+                }
+            )
 
-        item_overflow = overflow_by_item.setdefault(
-            line.item_id,
-            {
-                "item": item,
-                "contracted_qty": contracted_qty,
-                "accumulated": accumulated,
-                "justifications": [],
-            },
-        )
-        item_overflow["accumulated"] = accumulated
-        if (line.justification or "").strip():
-            item_overflow["justifications"].append(line.justification.strip())
+        if excess_qty > 0:
+            overflow_rows_raw.append(
+                {
+                    "sort": (
+                        _to_text(item.eap_code),
+                        _to_text(getattr(line.location, "code", "")),
+                        line.id,
+                    ),
+                    "values": [
+                        _to_text(item.eap_code),
+                        _to_text(item.description),
+                        _to_text(getattr(line.location, "code", None)),
+                        _to_text(getattr(item.unit, "code", None)),
+                        excess_qty,
+                        excess_qty * unit_total,
+                        _to_text(line.excess_justification),
+                    ],
+                }
+            )
 
     extra_rows_raw: list[dict] = []
     extra_lines.sort(
@@ -204,28 +214,7 @@ def _build_period_data(period: MeasurementPeriod) -> dict:
             }
         )
 
-    overflow_rows: list[list] = []
-    overflow_items = sorted(
-        overflow_by_item.values(),
-        key=lambda row: (_to_text(row["item"].eap_code), _to_text(row["item"].description)),
-    )
-    for row in overflow_items:
-        contracted_qty = row["contracted_qty"]
-        accumulated = row["accumulated"]
-        if accumulated <= contracted_qty:
-            continue
-        overflow_qty = accumulated - contracted_qty
-        justifications = " | ".join(dict.fromkeys(row["justifications"])) if row["justifications"] else "-"
-        overflow_rows.append(
-            [
-                _to_text(row["item"].eap_code),
-                _to_text(row["item"].description),
-                contracted_qty,
-                accumulated,
-                overflow_qty,
-                justifications,
-            ]
-        )
+    overflow_rows = [row["values"] for row in sorted(overflow_rows_raw, key=lambda row: row["sort"])]
 
     contracted_grouped, contracted_grouped_by_discipline = _order_grouped_rows(contracted_rows_raw)
     extra_grouped, extra_grouped_by_discipline = _order_grouped_rows(extra_rows_raw)
@@ -236,7 +225,7 @@ def _build_period_data(period: MeasurementPeriod) -> dict:
         "contracted_grouped_by_discipline": contracted_grouped_by_discipline,
         "extra_grouped_by_discipline": extra_grouped_by_discipline,
         "overflow_rows": overflow_rows,
-        "has_rows": bool(contracted_rows_raw or extra_rows_raw),
+        "has_rows": bool(contracted_lines or extra_lines),
     }
 
 
@@ -248,9 +237,21 @@ def _centered_start(num_cols: int) -> int:
 
 
 def _set_col_width(ws: Worksheet, col_index: int, width: float) -> None:
-    col = ws.cell(row=1, column=col_index).column_letter
+    col = get_column_letter(col_index)
     current = ws.column_dimensions[col].width
     ws.column_dimensions[col].width = max(current or 0, width)
+
+
+def _set_cell_value(ws: Worksheet, row: int, column: int, value):
+    cell = ws.cell(row=row, column=column)
+    if isinstance(cell, MergedCell):
+        for merged_range in list(ws.merged_cells.ranges):
+            if cell.coordinate in merged_range:
+                ws.unmerge_cells(str(merged_range))
+                break
+        cell = ws.cell(row=row, column=column)
+    cell.value = value
+    return cell
 
 
 def _style_cell(cell, *, bold: bool = False, align: str = "center", fill_header: bool = False) -> None:
@@ -263,7 +264,7 @@ def _style_cell(cell, *, bold: bool = False, align: str = "center", fill_header:
 
 def _write_block_title(ws: Worksheet, row: int, text: str) -> int:
     ws.merge_cells(start_row=row, start_column=WORK_START_COL, end_row=row, end_column=WORK_END_COL)
-    cell = ws.cell(row=row, column=WORK_START_COL, value=text)
+    cell = _set_cell_value(ws, row, WORK_START_COL, text)
     cell.font = SUBTITLE_FONT
     cell.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[row].height = 20
@@ -272,7 +273,7 @@ def _write_block_title(ws: Worksheet, row: int, text: str) -> int:
 
 def _write_empty_message(ws: Worksheet, row: int, message: str) -> int:
     ws.merge_cells(start_row=row, start_column=WORK_START_COL, end_row=row, end_column=WORK_END_COL)
-    cell = ws.cell(row=row, column=WORK_START_COL, value=message)
+    cell = _set_cell_value(ws, row, WORK_START_COL, message)
     cell.font = BODY_FONT
     cell.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[row].height = 18
@@ -288,24 +289,24 @@ def _write_table(
     column_widths: list[float],
     left_align_cols: set[int] | None = None,
     number_formats: dict[int, str] | None = None,
+    start_col_override: int | None = None,
 ) -> int:
     left_align_cols = left_align_cols or set()
     number_formats = number_formats or {}
 
-    start_col = _centered_start(len(headers))
-    end_col = start_col + len(headers) - 1
+    start_col = start_col_override if start_col_override is not None else _centered_start(len(headers))
 
     for idx, width in enumerate(column_widths):
         _set_col_width(ws, start_col + idx, width)
 
     for idx, header in enumerate(headers):
-        cell = ws.cell(row=row, column=start_col + idx, value=header)
+        cell = _set_cell_value(ws, row, start_col + idx, header)
         _style_cell(cell, bold=True, align="center", fill_header=True)
 
     current_row = row + 1
     for data_row in rows:
         for idx, value in enumerate(data_row):
-            cell = ws.cell(row=current_row, column=start_col + idx, value=value)
+            cell = _set_cell_value(ws, current_row, start_col + idx, value)
             align = "left" if idx in left_align_cols else "center"
             _style_cell(cell, bold=False, align=align, fill_header=False)
             if idx in number_formats and value not in (None, "-", ""):
@@ -315,7 +316,6 @@ def _write_table(
     for current in range(row, current_row):
         ws.row_dimensions[current].height = 18
 
-    ws.auto_filter.ref = f"{ws.cell(row=row, column=start_col).coordinate}:{ws.cell(row=row, column=end_col).coordinate}"
     return current_row + 1
 
 
@@ -353,11 +353,11 @@ def _write_grouped_table_block(
 
 
 def _render_header(ws: Worksheet, period: MeasurementPeriod) -> int:
-    ws.merge_cells(start_row=1, start_column=WORK_START_COL, end_row=1, end_column=WORK_END_COL)
-    title = ws.cell(row=1, column=WORK_START_COL, value="BOLETIM DE MEDICAO")
+    ws.merge_cells(start_row=2, start_column=WORK_START_COL, end_row=2, end_column=WORK_END_COL)
+    title = _set_cell_value(ws, 2, WORK_START_COL, "BOLETIM DE MEDICAO")
     title.font = TITLE_FONT
     title.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 24
 
     incc_value = (
         f"indice={_to_text(period.index_code_snapshot)}, "
@@ -381,15 +381,15 @@ def _render_header(ws: Worksheet, period: MeasurementPeriod) -> int:
     _set_col_width(ws, 9, 18)
     _set_col_width(ws, 10, 34)
 
-    row = 3
+    row = 4
     for idx in range(0, len(metadata_pairs), 2):
         left_label, left_value = metadata_pairs[idx]
         right_label, right_value = metadata_pairs[idx + 1]
 
-        left_label_cell = ws.cell(row=row, column=3, value=left_label)
-        left_value_cell = ws.cell(row=row, column=4, value=left_value)
-        right_label_cell = ws.cell(row=row, column=9, value=right_label)
-        right_value_cell = ws.cell(row=row, column=10, value=right_value)
+        left_label_cell = _set_cell_value(ws, row, 3, left_label)
+        left_value_cell = _set_cell_value(ws, row, 4, left_value)
+        right_label_cell = _set_cell_value(ws, row, 9, right_label)
+        right_value_cell = _set_cell_value(ws, row, 10, right_value)
 
         _style_cell(left_label_cell, bold=True, align="center", fill_header=True)
         _style_cell(left_value_cell, bold=False, align="left", fill_header=False)
@@ -424,6 +424,7 @@ def _render_summary_and_signatures(ws: Worksheet, row: int, period: MeasurementP
         column_widths=[30, 30],
         left_align_cols={0},
         number_formats={1: '#,##0.00'},
+        start_col_override=6,  # F:G
     )
 
     row = _write_block_title(ws, row, "Assinaturas")
@@ -438,7 +439,49 @@ def _render_summary_and_signatures(ws: Worksheet, row: int, period: MeasurementP
     return row
 
 
+def _prepare_sheet_for_render(ws: Worksheet) -> None:
+    # Some templates ship with merged cells over the render area; writing to a non-anchor
+    # merged cell raises "'MergedCell' object attribute 'value' is read-only".
+    for merged_range in list(ws.merged_cells.ranges):
+        ws.unmerge_cells(str(merged_range))
+    # Remove pre-existing Excel table objects from template to avoid overlap/corruption
+    # when we rewrite the sheet with custom merged rows and blocks.
+    for table_name in list(ws.tables.keys()):
+        del ws.tables[table_name]
+    ws.auto_filter.ref = None
+
+
+def _add_logo_first_row(ws: Worksheet) -> None:
+    try:
+        logo_path = get_template_path(LOGO_NAME)
+    except FileNotFoundError as exc:
+        raise ValidationError("Logo nao encontrada: assets/templates/Logo-rem.png.") from exc
+
+    try:
+        from openpyxl.drawing.image import Image as OpenPyxlImage
+        logo = OpenPyxlImage(str(logo_path))
+    except ImportError as exc:
+        raise ValidationError(
+            "Dependencia ausente para inserir logo no XLSX. Instale Pillow (pip install Pillow)."
+        ) from exc
+    except Exception as exc:
+        raise ValidationError(f"Nao foi possivel carregar a logo ({logo_path.name}): {exc}") from exc
+
+    ws.row_dimensions[1].height = max(ws.row_dimensions[1].height or 0, 24)
+    target_height_px = max(1, int(round((ws.row_dimensions[1].height or 24) * 96 / 72)))
+
+    if logo.height:
+        scale = target_height_px / float(logo.height)
+        logo.height = target_height_px
+        logo.width = max(1, int(round(float(logo.width) * scale)))
+
+    logo.anchor = "B1"
+    ws.add_image(logo)
+
+
 def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict) -> None:
+    _prepare_sheet_for_render(ws)
+    _add_logo_first_row(ws)
     ws.sheet_view.zoomScale = 90
     ws.page_margins.left = 0.4
     ws.page_margins.right = 0.4
@@ -489,11 +532,11 @@ def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict) -> None:
         row = _write_table(
             ws,
             row,
-            headers=["EAP", "Descricao", "Contratado", "Acumulado", "Excedente", "Justificativa"],
+            headers=["EAP", "Descricao", "Local", "Und", "Excedente", "Total", "Justificativa"],
             rows=data["overflow_rows"],
-            column_widths=[12, 44, 12, 12, 12, 28],
-            left_align_cols={1, 5},
-            number_formats={2: '#,##0.000', 3: '#,##0.000', 4: '#,##0.000'},
+            column_widths=[12, 44, 10, 8, 12, 14, 28],
+            left_align_cols={1, 6},
+            number_formats={4: '#,##0.000', 5: '#,##0.00'},
         )
 
     _render_summary_and_signatures(ws, row, period)
@@ -555,6 +598,6 @@ def generate_xlsx_boletim(period_id: int):
             export_type=ExportType.XLSX_BOLETIM,
             file_path=relative_file_path,
             status=ExportStatus.ERROR,
-            error_message=str(exc),
+            error_message=f"[xlsx_boletim] {exc}",
         )
         return export_record, None

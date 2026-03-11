@@ -155,6 +155,8 @@ class MeasurementLine(models.Model):
     extra_pu_material = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0"))
     extra_pu_labor = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0"))
     qty_period = models.DecimalField(max_digits=14, decimal_places=3)
+    excess_qty = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    excess_justification = models.TextField(blank=True)
     justification = models.TextField(blank=True)
     note = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -186,6 +188,13 @@ class MeasurementLine(models.Model):
 
         if self.line_kind == MeasurementLineKind.CONTRACTED and not self.item_id:
             raise ValidationError("Linhas CONTRACTED exigem item.")
+        if (
+            self.line_kind == MeasurementLineKind.CONTRACTED
+            and self.excess_qty is not None
+            and self.excess_qty > 0
+            and not (self.excess_justification or "").strip()
+        ):
+            raise ValidationError("Justificativa do excedente e obrigatoria.")
 
         if self.line_kind == MeasurementLineKind.EXTRA:
             if not self.extra_description:

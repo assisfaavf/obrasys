@@ -26,7 +26,7 @@
       {% for period in periods %}
         <tr>
           <td>{{ period.number }}</td>
-          <td>{{ period.ref_month }}</td>
+          <td>{{ period.ref_month|date:"m/Y" }}</td>
           <td>{{ period.workflow_status }}</td>
           <td>{{ period.financial_status }}</td>
           <td>{{ period.total_indexed_snapshot|default:period.total_total_snapshot }}</td>

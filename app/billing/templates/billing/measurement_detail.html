@@ -7,13 +7,17 @@
   <p class="muted">
     Workflow: {{ period.workflow_status }} |
     Financial: {{ period.financial_status }} |
-    Ref: {{ period.ref_month }}
+    Ref: {{ period.ref_month|date:"m/Y" }}
   </p>
 
   <div class="actions">
     <a href="{% url 'billing:project_detail' period.project.id %}">Voltar para obra</a>
     {% if not is_draft %}
-      <a href="{% url 'billing:measurement_export_xlsx' period.id %}">Gerar Boletim Excel</a>
+      {% if boletim_template_available %}
+        <a href="{% url 'billing:measurement_export_xlsx' period.id %}">Gerar Boletim Excel</a>
+      {% else %}
+        <span class="errors">{{ boletim_template_error }}</span>
+      {% endif %}
     {% endif %}
   </div>
 
@@ -43,8 +47,8 @@
     {% else %}
       <p class="muted">
         INCC code={{ incc_data.code|default:"-" }},
-        base={{ incc_data.base_month|default:"-" }},
-        ref={{ incc_data.ref_month|default:"-" }},
+        base={% if incc_data.base_month %}{{ incc_data.base_month|date:"m/Y" }}{% else %}-{% endif %},
+        ref={% if incc_data.ref_month %}{{ incc_data.ref_month|date:"m/Y" }}{% else %}-{% endif %},
         factor={{ incc_data.factor }},
         apply_to={{ incc_data.apply_to }}
       </p>
@@ -59,8 +63,8 @@
       <p>
         Snapshot INCC:
         code={{ period.index_code_snapshot|default:"-" }},
-        base={{ period.index_base_month_snapshot|default:"-" }},
-        ref={{ period.index_ref_month_snapshot|default:"-" }},
+        base={% if period.index_base_month_snapshot %}{{ period.index_base_month_snapshot|date:"m/Y" }}{% else %}-{% endif %},
+        ref={% if period.index_ref_month_snapshot %}{{ period.index_ref_month_snapshot|date:"m/Y" }}{% else %}-{% endif %},
         factor={{ period.index_factor_snapshot }}
       </p>
     {% endif %}
@@ -89,13 +93,12 @@
           <th>EAP</th>
           <th>Descricao</th>
           <th>Local</th>
-          <th>Qtd periodo</th>
+          <th>Qtd contratada periodo</th>
           <th>Anterior</th>
           <th>Acumulado</th>
           <th>Saldo</th>
           <th>% acumulado</th>
           <th>Valor periodo</th>
-          <th>Justificativa</th>
           <th>Acoes</th>
         </tr>
       </thead>
@@ -105,13 +108,12 @@
             <td>{{ row.line.item.eap_code }}</td>
             <td>{{ row.line.item.description }}</td>
             <td>{{ row.line.location.code|default:"-" }}</td>
-            <td>{{ row.line.qty_period }}</td>
+            <td>{{ row.effective_qty }}</td>
             <td>{{ row.previous }}</td>
             <td>{{ row.accumulated }}</td>
             <td>{{ row.balance }}</td>
             <td>{{ row.percent|floatformat:2 }}%</td>
             <td>{{ row.period_value|floatformat:2 }}</td>
-            <td>{{ row.line.justification|default:"-" }}</td>
             <td>
               {% if is_draft %}
                 <a href="{% url 'billing:line_edit' row.line.id %}">Editar</a>
@@ -121,8 +123,17 @@
               {% endif %}
             </td>
           </tr>
+          {% if row.excess_qty > 0 %}
+            <tr>
+              <td colspan="10" class="errors">
+                Excedente detectado: {{ row.excess_qty }} |
+                Total excedente: {{ row.excess_value|floatformat:2 }} |
+                Justificativa: {{ row.line.excess_justification|default:"-" }}
+              </td>
+            </tr>
+          {% endif %}
         {% empty %}
-          <tr><td colspan="11">Sem linhas contratadas.</td></tr>
+          <tr><td colspan="10">Sem linhas contratadas.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -132,9 +143,75 @@
       <form method="post">
         {% csrf_token %}
         <input type="hidden" name="action" value="add_contracted">
-        {{ contracted_form.as_p }}
+        <p>
+          {{ contracted_form.item.label_tag }}
+          {{ contracted_form.item }}
+          {{ contracted_form.item.errors }}
+        </p>
+        <p>
+          {{ contracted_form.location.label_tag }}
+          {{ contracted_form.location }}
+          {{ contracted_form.location.errors }}
+        </p>
+        <p>
+          {{ contracted_form.qty_period.label_tag }}
+          {{ contracted_form.qty_period }}
+          {{ contracted_form.qty_period.errors }}
+        </p>
+        <div id="contracted-excess-inline" style="display:none;">
+          <p class="errors" id="contracted-excess-msg"></p>
+          <p>
+            {{ contracted_form.excess_justification.label_tag }}
+            {{ contracted_form.excess_justification }}
+            {{ contracted_form.excess_justification.errors }}
+          </p>
+        </div>
+        <p>
+          {{ contracted_form.note.label_tag }}
+          {{ contracted_form.note }}
+          {{ contracted_form.note.errors }}
+        </p>
         <button type="submit">Adicionar</button>
       </form>
+      {{ contracted_item_balances|json_script:"contracted-item-balances" }}
+      <script>
+        (function () {
+          const dataEl = document.getElementById("contracted-item-balances");
+          if (!dataEl) return;
+          const balances = JSON.parse(dataEl.textContent || "{}");
+          const itemEl = document.getElementById("{{ contracted_form.item.id_for_label }}");
+          const qtyEl = document.getElementById("{{ contracted_form.qty_period.id_for_label }}");
+          const inlineEl = document.getElementById("contracted-excess-inline");
+          const msgEl = document.getElementById("contracted-excess-msg");
+          const justificationEl = document.getElementById("{{ contracted_form.excess_justification.id_for_label }}");
+
+          function parseDecimal(value) {
+            if (value === null || value === undefined || value === "") return 0;
+            return Number(String(value).replace(",", ".")) || 0;
+          }
+
+          function updateInlineExcess() {
+            const selectedItemId = itemEl ? itemEl.value : "";
+            const saldoAntes = parseDecimal(balances[selectedItemId] || "0");
+            const qtdDigitada = parseDecimal(qtyEl ? qtyEl.value : "0");
+            const excedente = Math.max(qtdDigitada - saldoAntes, 0);
+
+            if (excedente > 0) {
+              inlineEl.style.display = "block";
+              msgEl.textContent = "Excedente detectado: " + excedente.toFixed(3);
+              if (justificationEl) justificationEl.required = true;
+            } else {
+              inlineEl.style.display = "none";
+              msgEl.textContent = "";
+              if (justificationEl) justificationEl.required = false;
+            }
+          }
+
+          if (itemEl) itemEl.addEventListener("change", updateInlineExcess);
+          if (qtyEl) qtyEl.addEventListener("input", updateInlineExcess);
+          updateInlineExcess();
+        })();
+      </script>
     {% endif %}
   </div>
 

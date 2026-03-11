@@ -2,4 +2,5 @@ Django==5.2.12
 psycopg[binary]
 django-environ
 openpyxl
+Pillow
 python-docx

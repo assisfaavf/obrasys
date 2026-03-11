@@ -19,6 +19,7 @@ from core.models import Project
 from exports.models import ExportStatus
 from exports.services import generate_xlsx_boletim
 from pricing.models import AdjustmentApplyTo
+from utils.paths import get_template_path
 
 
 def _compute_indexed_preview(
@@ -91,6 +92,13 @@ def measurement_new_view(request, project_id: int):
 def measurement_detail_view(request, measurement_id: int):
     period = get_object_or_404(MeasurementPeriod.objects.select_related("project"), pk=measurement_id)
     is_draft = period.workflow_status == WorkflowStatus.DRAFT
+    boletim_template_available = True
+    boletim_template_error = ""
+    try:
+        get_template_path("boletim_template.xlsx")
+    except FileNotFoundError:
+        boletim_template_available = False
+        boletim_template_error = "Template ausente: assets/templates/boletim_template.xlsx."
 
     period_form = MeasurementPeriodForm(instance=period, prefix="period")
     contracted_form = MeasurementLineForm(period=period, prefix="contracted")
@@ -162,19 +170,42 @@ def measurement_detail_view(request, measurement_id: int):
     contracted_lines = [line for line in lines if line.line_kind == MeasurementLineKind.CONTRACTED]
     extra_lines = [line for line in lines if line.line_kind == MeasurementLineKind.EXTRA]
 
-    period_qty_by_item: dict[int, Decimal] = {}
+    contracted_effective_by_line: dict[int, Decimal] = {}
+    contracted_excess_by_line: dict[int, Decimal] = {}
+    period_effective_qty_by_item: dict[int, Decimal] = {}
+
+    contracted_lines_by_item: dict[int, list[MeasurementLine]] = {}
     for line in contracted_lines:
         if line.item_id:
-            period_qty_by_item[line.item_id] = period_qty_by_item.get(line.item_id, Decimal("0")) + (
-                line.qty_period or Decimal("0")
-            )
+            contracted_lines_by_item.setdefault(line.item_id, []).append(line)
+
+    for item_id, item_lines in contracted_lines_by_item.items():
+        first_line = item_lines[0]
+        previous = get_item_cumulative(period.project, item_id, period.number - 1)
+        contracted_qty = (first_line.item.qty_contracted or Decimal("0")) if first_line.item else Decimal("0")
+        remaining = contracted_qty - previous
+        total_effective = Decimal("0")
+
+        for line in sorted(item_lines, key=lambda current: current.id):
+            qty_period = line.qty_period or Decimal("0")
+            available = max(remaining, Decimal("0"))
+            effective_qty = min(qty_period, available)
+            excess_qty = max(qty_period - effective_qty, Decimal("0"))
+            remaining -= effective_qty
+            total_effective += effective_qty
+            contracted_effective_by_line[line.id] = effective_qty
+            contracted_excess_by_line[line.id] = excess_qty
+
+        period_effective_qty_by_item[item_id] = total_effective
 
     contracted_line_stats = []
     for line in contracted_lines:
         if not line.item_id:
             continue
+        effective_qty = contracted_effective_by_line.get(line.id, Decimal("0"))
+        excess_qty = contracted_excess_by_line.get(line.id, Decimal("0"))
         previous = get_item_cumulative(period.project, line.item_id, period.number - 1)
-        accumulated = previous + period_qty_by_item.get(line.item_id, Decimal("0"))
+        accumulated = previous + period_effective_qty_by_item.get(line.item_id, Decimal("0"))
         contracted_qty = line.item.qty_contracted or Decimal("0")
         balance = contracted_qty - accumulated
         percent = (
@@ -183,18 +214,29 @@ def measurement_detail_view(request, measurement_id: int):
             else Decimal("0")
         )
         unit_price = (line.item.pu_material or Decimal("0")) + (line.item.pu_labor or Decimal("0"))
-        period_value = (line.qty_period or Decimal("0")) * unit_price
+        period_value = effective_qty * unit_price
+        excess_value = excess_qty * unit_price
 
         contracted_line_stats.append(
             {
                 "line": line,
+                "effective_qty": effective_qty,
+                "excess_qty": excess_qty,
                 "previous": previous,
                 "accumulated": accumulated,
                 "balance": balance,
                 "percent": percent,
                 "period_value": period_value,
+                "excess_value": excess_value,
             }
         )
+
+    contracted_item_balances: dict[str, str] = {}
+    for item in contracted_form.fields["item"].queryset:
+        previous = get_item_cumulative(period.project, item.id, period.number - 1)
+        consumed_in_period = period_effective_qty_by_item.get(item.id, Decimal("0"))
+        saldo_antes = (item.qty_contracted or Decimal("0")) - previous - consumed_in_period
+        contracted_item_balances[str(item.id)] = str(max(saldo_antes, Decimal("0")))
 
     settlements = period.settlements.order_by("event_date", "id")
 
@@ -225,11 +267,14 @@ def measurement_detail_view(request, measurement_id: int):
         {
             "period": period,
             "is_draft": is_draft,
+            "boletim_template_available": boletim_template_available,
+            "boletim_template_error": boletim_template_error,
             "period_form": period_form,
             "contracted_form": contracted_form,
             "extra_form": extra_form,
             "settlement_form": settlement_form,
             "contracted_line_stats": contracted_line_stats,
+            "contracted_item_balances": contracted_item_balances,
             "extra_lines": extra_lines,
             "settlements": settlements,
             "total_material": total_material,
