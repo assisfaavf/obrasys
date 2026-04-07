@@ -1,6 +1,11 @@
 from django.contrib import admin
+from django.contrib import messages
+from django.http import HttpResponseRedirect
+from django.urls import reverse
 
+from core.forms import ProjectAdminForm
 from core.models import Client, LocationTemplate, LocationTemplateItem, Project, ProjectLocation
+from core.services import apply_location_template_to_project
 
 
 @admin.register(Client)
@@ -11,9 +16,38 @@ class ClientAdmin(admin.ModelAdmin):
 
 @admin.register(Project)
 class ProjectAdmin(admin.ModelAdmin):
-    list_display = ("name", "status", "client", "start_date", "planned_end_date")
-    list_filter = ("status", "client")
+    form = ProjectAdminForm
+    change_form_template = "admin/core/project/change_form.html"
+    list_display = ("name", "status", "client", "location_template", "start_date", "planned_end_date")
+    list_filter = ("status", "client", "location_template")
     search_fields = ("name", "client__name")
+
+    def response_add(self, request, obj, post_url_continue=None):
+        if "_apply_location_template" in request.POST:
+            self._apply_template_and_message(request, obj)
+            change_url = reverse("admin:core_project_change", args=[obj.pk])
+            return HttpResponseRedirect(change_url)
+        return super().response_add(request, obj, post_url_continue)
+
+    def response_change(self, request, obj):
+        if "_apply_location_template" in request.POST:
+            self._apply_template_and_message(request, obj)
+            return HttpResponseRedirect(request.path)
+        return super().response_change(request, obj)
+
+    def _apply_template_and_message(self, request, obj):
+        try:
+            result = apply_location_template_to_project(project=obj)
+        except Exception as exc:
+            self.message_user(request, str(exc), level=messages.ERROR)
+            return
+
+        message = (
+            f"Template '{result['template_name']}' aplicado: "
+            f"{result['created_count']} locais criados, "
+            f"{result['skipped_count']} ignorados."
+        )
+        self.message_user(request, message)
 
 
 @admin.register(ProjectLocation)

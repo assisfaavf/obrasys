@@ -21,6 +21,13 @@ class Client(models.Model):
 class Project(models.Model):
     name = models.CharField(max_length=255)
     client = models.ForeignKey("core.Client", on_delete=models.CASCADE, related_name="projects")
+    location_template = models.ForeignKey(
+        "core.LocationTemplate",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="projects",
+    )
     address = models.CharField(max_length=255, blank=True)
     start_date = models.DateField(null=True, blank=True)
     planned_end_date = models.DateField(null=True, blank=True)

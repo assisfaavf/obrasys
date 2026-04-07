@@ -15,7 +15,9 @@ from billing.services.measurement_calc import (
     finalize_period,
     get_item_cumulative,
 )
+from core.forms import ProjectLocationTemplateForm
 from core.models import Project
+from core.services import apply_location_template_to_project
 from exports.models import ExportStatus
 from exports.services import generate_sienge_master, generate_sienge_snapshot, generate_xlsx_boletim
 from pricing.models import AdjustmentApplyTo
@@ -44,8 +46,36 @@ def project_list_view(request):
 
 @staff_member_required
 def project_detail_view(request, project_id: int):
-    project = get_object_or_404(Project.objects.select_related("client"), pk=project_id)
+    project = get_object_or_404(Project.objects.select_related("client", "location_template"), pk=project_id)
+    template_form = ProjectLocationTemplateForm(instance=project, prefix="project")
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action in {"save_location_template", "apply_location_template"}:
+            template_form = ProjectLocationTemplateForm(request.POST, instance=project, prefix="project")
+            if template_form.is_valid():
+                project = template_form.save()
+                if action == "save_location_template":
+                    messages.success(request, "Template de locais atualizado.")
+                else:
+                    try:
+                        result = apply_location_template_to_project(project=project)
+                    except ValidationError as exc:
+                        for message in exc.messages:
+                            messages.error(request, message)
+                    else:
+                        messages.success(
+                            request,
+                            (
+                                f"Template '{result['template_name']}' aplicado: "
+                                f"{result['created_count']} locais criados, "
+                                f"{result['skipped_count']} ignorados."
+                            ),
+                        )
+                return redirect("billing:project_detail", project_id=project.id)
+
     periods = project.measurement_periods.all().order_by("number")
+    locations = project.locations.all().order_by("order_index", "code")
     sienge_template_available = True
     sienge_template_error = ""
     try:
@@ -59,6 +89,8 @@ def project_detail_view(request, project_id: int):
         {
             "project": project,
             "periods": periods,
+            "locations": locations,
+            "template_form": template_form,
             "sienge_template_available": sienge_template_available,
             "sienge_template_error": sienge_template_error,
         },
