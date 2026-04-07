@@ -29,7 +29,7 @@ class BudgetItem(models.Model):
         ordering = ["project_id", "eap_code"]
 
     def __str__(self) -> str:
-        return f"{self.project.name} - {self.eap_code}"
+        return f"{self.eap_code} — {self.description} [{self.unit.code}]"
 
 
 class BudgetImportMode(models.TextChoices):

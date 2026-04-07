@@ -103,3 +103,21 @@ class BudgetImportServiceTests(TestCase):
         self.assertEqual(summary["deactivated"], 1)
         missing_item.refresh_from_db()
         self.assertFalse(missing_item.is_active)
+
+
+class BudgetItemDisplayTests(TestCase):
+    def test_budget_item_str_includes_eap_description_and_unit(self):
+        client = Client.objects.create(name="Cliente Display")
+        project = Project.objects.create(name="Projeto Display", client=client)
+        unit = Unit.objects.create(code="un", name="Unidade")
+        item = BudgetItem.objects.create(
+            project=project,
+            eap_code="1.3.2",
+            description="Quadro de distribuicao - pavimento tipo",
+            unit=unit,
+            qty_contracted=Decimal("1"),
+            pu_material=Decimal("10"),
+            pu_labor=Decimal("5"),
+        )
+
+        self.assertEqual(str(item), "1.3.2 — Quadro de distribuicao - pavimento tipo [un]")
