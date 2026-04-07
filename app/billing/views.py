@@ -9,6 +9,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 
 from billing.forms import ExtraLineForm, MeasurementLineForm, MeasurementPeriodForm, SettlementForm
 from billing.models import MeasurementLine, MeasurementLineKind, MeasurementPeriod, WorkflowStatus
+from billing.services.measurement_lines import add_or_merge_contracted_line
 from billing.services.measurement_calc import (
     compute_incc_factor,
     compute_period_totals,
@@ -172,9 +173,24 @@ def measurement_detail_view(request, measurement_id: int):
                 return redirect("billing:measurement_detail", measurement_id=period.id)
             contracted_form = MeasurementLineForm(request.POST, period=period, prefix="contracted")
             if contracted_form.is_valid():
-                contracted_form.save()
-                messages.success(request, "Linha contratada adicionada.")
-                return redirect("billing:measurement_detail", measurement_id=period.id)
+                try:
+                    _, merged = add_or_merge_contracted_line(
+                        period=period,
+                        item=contracted_form.cleaned_data["item"],
+                        location=contracted_form.cleaned_data.get("location"),
+                        qty_period=contracted_form.cleaned_data["qty_period"],
+                        note=contracted_form.cleaned_data.get("note", ""),
+                        excess_justification=contracted_form.cleaned_data.get("excess_justification", ""),
+                    )
+                except ValidationError as exc:
+                    for message in exc.messages:
+                        messages.error(request, message)
+                else:
+                    if merged:
+                        messages.success(request, "Quantidade somada a linha existente.")
+                    else:
+                        messages.success(request, "Linha contratada adicionada.")
+                    return redirect("billing:measurement_detail", measurement_id=period.id)
 
         elif action == "add_extra":
             if not is_draft:
