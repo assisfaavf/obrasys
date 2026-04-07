@@ -17,7 +17,7 @@ from billing.services.measurement_calc import (
 )
 from core.models import Project
 from exports.models import ExportStatus
-from exports.services import generate_xlsx_boletim
+from exports.services import generate_sienge_master, generate_sienge_snapshot, generate_xlsx_boletim
 from pricing.models import AdjustmentApplyTo
 from utils.paths import get_template_path
 
@@ -46,12 +46,21 @@ def project_list_view(request):
 def project_detail_view(request, project_id: int):
     project = get_object_or_404(Project.objects.select_related("client"), pk=project_id)
     periods = project.measurement_periods.all().order_by("number")
+    sienge_template_available = True
+    sienge_template_error = ""
+    try:
+        get_template_path("sienge_template.xlsx")
+    except FileNotFoundError:
+        sienge_template_available = False
+        sienge_template_error = "Template ausente: assets/templates/sienge_template.xlsx."
     return render(
         request,
         "billing/project_detail.html",
         {
             "project": project,
             "periods": periods,
+            "sienge_template_available": sienge_template_available,
+            "sienge_template_error": sienge_template_error,
         },
     )
 
@@ -94,11 +103,18 @@ def measurement_detail_view(request, measurement_id: int):
     is_draft = period.workflow_status == WorkflowStatus.DRAFT
     boletim_template_available = True
     boletim_template_error = ""
+    sienge_template_available = True
+    sienge_template_error = ""
     try:
         get_template_path("boletim_template.xlsx")
     except FileNotFoundError:
         boletim_template_available = False
         boletim_template_error = "Template ausente: assets/templates/boletim_template.xlsx."
+    try:
+        get_template_path("sienge_template.xlsx")
+    except FileNotFoundError:
+        sienge_template_available = False
+        sienge_template_error = "Template ausente: assets/templates/sienge_template.xlsx."
 
     period_form = MeasurementPeriodForm(instance=period, prefix="period")
     contracted_form = MeasurementLineForm(period=period, prefix="contracted")
@@ -143,12 +159,24 @@ def measurement_detail_view(request, measurement_id: int):
                 messages.error(request, "Periodo nao esta em DRAFT.")
                 return redirect("billing:measurement_detail", measurement_id=period.id)
             try:
-                finalize_period(period.id, request.user)
+                finalized_period = finalize_period(period.id, request.user)
             except ValidationError as exc:
                 for message in exc.messages:
                     messages.error(request, message)
             else:
+                snapshot_export, _ = generate_sienge_snapshot(finalized_period.id)
+                master_export, _ = generate_sienge_master(finalized_period.project_id)
                 messages.success(request, "Mediacao finalizada com sucesso.")
+                if snapshot_export.status != ExportStatus.OK:
+                    messages.warning(
+                        request,
+                        "A medicao foi finalizada, mas houve falha ao gerar o snapshot Sienge.",
+                    )
+                if master_export.status != ExportStatus.OK:
+                    messages.warning(
+                        request,
+                        "A medicao foi finalizada, mas houve falha ao atualizar o mestre Sienge.",
+                    )
             return redirect("billing:measurement_detail", measurement_id=period.id)
 
         elif action == "add_settlement":
@@ -269,6 +297,8 @@ def measurement_detail_view(request, measurement_id: int):
             "is_draft": is_draft,
             "boletim_template_available": boletim_template_available,
             "boletim_template_error": boletim_template_error,
+            "sienge_template_available": sienge_template_available,
+            "sienge_template_error": sienge_template_error,
             "period_form": period_form,
             "contracted_form": contracted_form,
             "extra_form": extra_form,
@@ -364,4 +394,42 @@ def measurement_export_xlsx_view(request, measurement_id: int):
         open(xlsx_path, "rb"),
         as_attachment=True,
         filename=xlsx_path.name,
+    )
+
+
+@staff_member_required
+def measurement_export_sienge_snapshot_view(request, measurement_id: int):
+    period = get_object_or_404(MeasurementPeriod, pk=measurement_id)
+    export_record, snapshot_path = generate_sienge_snapshot(period.id)
+
+    if export_record.status != ExportStatus.OK or snapshot_path is None:
+        messages.error(
+            request,
+            f"Falha ao gerar snapshot Sienge: {export_record.error_message or 'erro desconhecido'}",
+        )
+        return redirect("billing:measurement_detail", measurement_id=period.id)
+
+    return FileResponse(
+        open(snapshot_path, "rb"),
+        as_attachment=True,
+        filename=snapshot_path.name,
+    )
+
+
+@staff_member_required
+def project_export_sienge_master_view(request, project_id: int):
+    project = get_object_or_404(Project, pk=project_id)
+    export_record, master_path = generate_sienge_master(project.id)
+
+    if export_record.status != ExportStatus.OK or master_path is None:
+        messages.error(
+            request,
+            f"Falha ao gerar mestre Sienge: {export_record.error_message or 'erro desconhecido'}",
+        )
+        return redirect("billing:project_detail", project_id=project.id)
+
+    return FileResponse(
+        open(master_path, "rb"),
+        as_attachment=True,
+        filename=master_path.name,
     )

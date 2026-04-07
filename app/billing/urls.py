@@ -18,6 +18,16 @@ urlpatterns = [
         views.measurement_export_xlsx_view,
         name="measurement_export_xlsx",
     ),
+    path(
+        "measurements/<int:measurement_id>/export/sienge-snapshot",
+        views.measurement_export_sienge_snapshot_view,
+        name="measurement_export_sienge_snapshot",
+    ),
+    path(
+        "projects/<int:project_id>/export/sienge-master",
+        views.project_export_sienge_master_view,
+        name="project_export_sienge_master",
+    ),
     path("measurement-lines/<int:line_id>/edit/", views.measurement_line_edit_view, name="line_edit"),
     path("measurement-lines/<int:line_id>/delete/", views.measurement_line_delete_view, name="line_delete"),
 ]

@@ -8,11 +8,12 @@ from unittest.mock import patch
 from django.test import TestCase
 from openpyxl import Workbook, load_workbook
 
-from billing.models import MeasurementLine, MeasurementPeriod
+from billing.models import MeasurementLine, MeasurementLineKind, MeasurementPeriod
 from billing.services.measurement_calc import finalize_period
 from catalog.models import BudgetItem, Unit
 from core.models import Client, Project
 from exports.models import ExportStatus, ExportType, MeasurementExport
+from exports.services.sienge_export import generate_sienge_master, generate_sienge_snapshot
 from exports.services.xlsx_boletim import generate_xlsx_boletim
 
 
@@ -119,6 +120,13 @@ class XlsxBoletimServiceTests(TestCase):
             self.assertEqual(sheet["B2"].value, "BOLETIM DE MEDICAO")
             self.assertEqual(sheet["D4"].value, self.project.name)
             self.assertGreaterEqual(len(sheet._images), 1)
+            self.assertTrue(
+                any(
+                    "R$" in str(cell.number_format or "")
+                    for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row)
+                    for cell in row
+                )
+            )
 
     def test_generate_xlsx_boletim_creates_measurement_export_record(self):
         with tempfile.TemporaryDirectory(prefix="xlsx-export-record-") as tmp_dir:
@@ -178,7 +186,7 @@ class XlsxBoletimServiceTests(TestCase):
         self.assertIsNone(output_path)
         self.assertIn("boletim_template.xlsx", export_record.error_message)
 
-    def test_generate_xlsx_boletim_blocks_draft_period(self):
+    def test_generate_xlsx_boletim_allows_draft_period_with_realtime_totals(self):
         draft_period = MeasurementPeriod.objects.create(
             project=self.project,
             number=2,
@@ -196,17 +204,36 @@ class XlsxBoletimServiceTests(TestCase):
         with tempfile.TemporaryDirectory(prefix="xlsx-draft-") as tmp_dir:
             temp_root = Path(tmp_dir)
             template_path = self._create_template(temp_root / "boletim_template.xlsx")
+            logo_path = self._create_logo(temp_root / "Logo-rem.png")
             exports_dir = temp_root / "exports"
             exports_dir.mkdir(parents=True, exist_ok=True)
 
-            with patch("exports.services.xlsx_boletim.get_template_path", return_value=template_path), patch(
+            with patch(
+                "exports.services.xlsx_boletim.get_template_path",
+                side_effect=self._template_side_effect(template_path, logo_path),
+            ), patch(
                 "exports.services.xlsx_boletim.get_exports_dir", return_value=exports_dir
             ):
                 export_record, output_path = generate_xlsx_boletim(draft_period.id)
 
-        self.assertEqual(export_record.status, ExportStatus.ERROR)
-        self.assertIsNone(output_path)
-        self.assertIn("DRAFT", export_record.error_message)
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            self.assertIsNotNone(output_path)
+
+            workbook = load_workbook(output_path)
+            sheet = workbook[workbook.sheetnames[0]]
+            self.assertEqual(sheet["B2"].value, "BOLETIM PRELIMINAR")
+            self.assertEqual(sheet["J6"].value, "RASCUNHO")
+
+            total_medicao = None
+            for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, values_only=True):
+                if "Total medicao" not in row:
+                    continue
+                label_col = row.index("Total medicao")
+                total_medicao = row[label_col + 1]
+                break
+
+            self.assertIsNotNone(total_medicao)
+            self.assertEqual(Decimal(str(total_medicao)), Decimal("15"))
 
     def test_generate_xlsx_boletim_separates_contracted_effective_and_excess(self):
         item_excess = BudgetItem.objects.create(
@@ -271,13 +298,353 @@ class XlsxBoletimServiceTests(TestCase):
             contracted_row = None
             overflow_row = None
             for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, values_only=True):
-                if len(row) > 8 and row[1] == "2.1":
-                    contracted_row = row
-                if len(row) > 8 and row[3] == "2.1":
+                if "2.1" not in row or "Item com excedente" not in row:
+                    continue
+                if "Aprovacao tecnica" in row:
                     overflow_row = row
+                else:
+                    contracted_row = row
 
             self.assertIsNotNone(contracted_row)
             self.assertIsNotNone(overflow_row)
-            self.assertEqual(Decimal(str(contracted_row[7])), Decimal("20"))
-            self.assertEqual(Decimal(str(overflow_row[7])), Decimal("10"))
-            self.assertEqual(overflow_row[9], "Aprovacao tecnica")
+
+            contracted_eap_idx = contracted_row.index("2.1")
+            overflow_eap_idx = overflow_row.index("2.1")
+            self.assertEqual(Decimal(str(contracted_row[contracted_eap_idx + 6])), Decimal("20"))
+            self.assertEqual(Decimal(str(overflow_row[overflow_eap_idx + 4])), Decimal("10"))
+            self.assertEqual(overflow_row[overflow_eap_idx + 6], "Aprovacao tecnica")
+
+
+class SiengeExportServiceTests(TestCase):
+    def setUp(self):
+        self.client_obj = Client.objects.create(
+            name="Cliente Sienge",
+            document="12.345.678/0001-99",
+            email="cliente@example.com",
+            phone="(88) 99999-0000",
+        )
+        self.project = Project.objects.create(
+            name="Projeto Sienge",
+            client=self.client_obj,
+            address="Rua das Flores, 123",
+        )
+        self.unit = Unit.objects.create(code="M2_SIENGE", name="Metro quadrado")
+
+    def _create_period(self, number: int, ref_month: date) -> MeasurementPeriod:
+        return MeasurementPeriod.objects.create(
+            project=self.project,
+            number=number,
+            ref_month=ref_month,
+            start_date=ref_month,
+            end_date=ref_month.replace(day=28),
+        )
+
+    def _create_sienge_template(self, path: Path, *, capacity: int = 4) -> Path:
+        workbook = Workbook()
+        workbook.remove(workbook.active)
+
+        institutional = workbook.create_sheet("Cadastro Institucional")
+        institutional["D6"] = "Modelo"
+        institutional["D9"] = "Modelo"
+
+        stages = workbook.create_sheet("Etapas")
+        stages["A5"] = "Etapa"
+        stages["B5"] = "Descrição"
+        for row in range(6, 6 + capacity):
+            stages.cell(row=row, column=1).value = f"S{row}"
+            stages.cell(row=row, column=2).value = f"Etapa {row}"
+
+        contract = workbook.create_sheet("Itens de Contrato")
+        headers = [
+            "Etapa",
+            "Item",
+            "Descrição",
+            "Unidade",
+            "Quantidade",
+            "Valor Unitário Material",
+            "Valor Unitário Mão de Obra",
+            "Valor Total Material",
+            "Valor Total Mão de obra",
+            "Valor Total (Com BDI e Leis Sociais)",
+        ]
+        for index, header in enumerate(headers, start=1):
+            contract.cell(row=5, column=index).value = header
+        for row in range(6, 6 + capacity):
+            contract.cell(row=row, column=1).value = f"S{row}"
+            contract.cell(row=row, column=2).value = f"SAMPLE-{row}"
+            contract.cell(row=row, column=3).value = f"Item {row}"
+
+        consolidated_items = workbook.create_sheet("Medição Consolidada (Itens de C")
+        item_headers = [
+            "Etapa",
+            "Item",
+            "Descrição",
+            "Quantidade Contratada",
+            "Valor Contratado",
+            "Saldo Total à Medir",
+            "Quantidade Executada",
+            "% Executado",
+            "Valor Executado",
+        ]
+        for index, header in enumerate(item_headers, start=1):
+            consolidated_items.cell(row=5, column=index).value = header
+        for row in range(6, 6 + capacity):
+            consolidated_items.cell(row=row, column=2).value = f"SAMPLE-{row}"
+
+        consolidated_stages = workbook.create_sheet("Medição Consolidada (Etapas)")
+        stage_headers = [
+            "Código",
+            "Etapa",
+            "Quantidade Contratada",
+            "Valor Contratado",
+            "Saldo",
+            "Quantidade Executada",
+            "%",
+            "Valor Executado",
+        ]
+        for index, header in enumerate(stage_headers, start=1):
+            consolidated_stages.cell(row=5, column=index).value = header
+        for row in range(6, 6 + capacity):
+            consolidated_stages.cell(row=row, column=2).value = f"Etapa {row}"
+
+        for number in range(1, 13):
+            sheet = workbook.create_sheet(f"Medição {number:02d}")
+            sheet["H2"] = "Medição Nº"
+            sheet["I2"] = "Período"
+            for index, header in enumerate(item_headers, start=1):
+                sheet.cell(row=5, column=index).value = header
+            for row in range(6, 6 + capacity):
+                sheet.cell(row=row, column=2).value = f"SAMPLE-{row}"
+
+        extras = workbook.create_sheet("EXTRAS (Lançamentos)")
+        extra_headers = [
+            "Medição Nº",
+            "Referência (MM/AAAA)",
+            "Período Início",
+            "Período Fim",
+            "Etapa",
+            "Descrição",
+            "Unidade",
+            "Quantidade",
+            "PU Material",
+            "PU MDO",
+            "Total (MAT+MDO)",
+            "Justificativa/Obs",
+        ]
+        for index, header in enumerate(extra_headers, start=1):
+            extras.cell(row=1, column=index).value = header
+
+        workbook.save(path)
+        return path
+
+    def _template_side_effect(self, template_path: Path):
+        def _resolver(template_name: str) -> Path:
+            if template_name == "sienge_template.xlsx":
+                return template_path
+            raise FileNotFoundError(template_name)
+
+        return _resolver
+
+    def test_generate_sienge_snapshot_with_contracted_extra_and_excess(self):
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="1.1.1",
+            description="Alvenaria",
+            unit=self.unit,
+            qty_contracted=Decimal("10"),
+            pu_material=Decimal("10"),
+            pu_labor=Decimal("5"),
+        )
+        period = self._create_period(1, date(2026, 4, 1))
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("12"),
+            excess_justification="Ajuste de campo",
+        )
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.EXTRA,
+            extra_description="Servico extra",
+            extra_unit=self.unit,
+            qty_period=Decimal("3"),
+            extra_pu_material=Decimal("2"),
+            extra_pu_labor=Decimal("1"),
+            justification="Complemento aprovado",
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-snapshot-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=4)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                export_record, output_path = generate_sienge_snapshot(period.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            self.assertEqual(export_record.export_type, ExportType.SIENGE_SNAPSHOT)
+            self.assertIsNotNone(output_path)
+
+            workbook = load_workbook(output_path)
+            measurement_sheet = workbook["Medição 01"]
+            self.assertEqual(Decimal(str(measurement_sheet["G6"].value)), Decimal("10.000"))
+            self.assertEqual(Decimal(str(measurement_sheet["I6"].value)), Decimal("150.00"))
+
+            extras_sheet = workbook["EXTRAS (Lançamentos)"]
+            self.assertEqual(extras_sheet["F2"].value, "Servico extra")
+            self.assertIn("1.1.1 - Alvenaria", extras_sheet["F3"].value)
+            self.assertEqual(export_record.summary_json["items_filled_count"], 1)
+            self.assertEqual(export_record.summary_json["extras_filled_count"], 1)
+            self.assertEqual(export_record.summary_json["excess_filled_count"], 1)
+
+    def test_generate_sienge_master_with_two_measurements(self):
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="2.1.1",
+            description="Piso",
+            unit=self.unit,
+            qty_contracted=Decimal("20"),
+            pu_material=Decimal("7"),
+            pu_labor=Decimal("3"),
+        )
+        period1 = self._create_period(1, date(2026, 1, 1))
+        period2 = self._create_period(2, date(2026, 2, 1))
+        MeasurementLine.objects.create(
+            period=period1,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("4"),
+        )
+        MeasurementLine.objects.create(
+            period=period2,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("3"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-master-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=4)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                export_record, output_path = generate_sienge_master(self.project.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            self.assertEqual(export_record.export_type, ExportType.SIENGE_MASTER)
+            self.assertIsNotNone(output_path)
+
+            workbook = load_workbook(output_path)
+            self.assertEqual(Decimal(str(workbook["Medição 01"]["G6"].value)), Decimal("4.000"))
+            self.assertEqual(Decimal(str(workbook["Medição 02"]["G6"].value)), Decimal("3.000"))
+            self.assertEqual(
+                Decimal(str(workbook["Medição Consolidada (Itens de C"]["G6"].value)),
+                Decimal("7.000"),
+            )
+
+    def test_generate_sienge_snapshot_clones_measurement_sheet_above_12(self):
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="3.1.1",
+            description="Cobertura",
+            unit=self.unit,
+            qty_contracted=Decimal("5"),
+            pu_material=Decimal("8"),
+            pu_labor=Decimal("2"),
+        )
+        period = self._create_period(13, date(2026, 3, 1))
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("2"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-clone-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=4)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                export_record, output_path = generate_sienge_snapshot(period.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            workbook = load_workbook(output_path)
+            self.assertIn("Medição 13", workbook.sheetnames)
+            self.assertEqual(workbook["Medição 13"]["H3"].value, 13)
+
+    def test_generate_sienge_snapshot_logs_missing_eap_without_breaking(self):
+        item_found = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="4.1.1",
+            description="Item encontrado",
+            unit=self.unit,
+            qty_contracted=Decimal("5"),
+            pu_material=Decimal("4"),
+            pu_labor=Decimal("1"),
+        )
+        item_missing = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="4.1.2",
+            description="Item sem linha",
+            unit=self.unit,
+            qty_contracted=Decimal("5"),
+            pu_material=Decimal("4"),
+            pu_labor=Decimal("1"),
+        )
+        period = self._create_period(1, date(2026, 5, 1))
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item_found,
+            qty_period=Decimal("1"),
+        )
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item_missing,
+            qty_period=Decimal("2"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-missing-eap-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=1)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                export_record, output_path = generate_sienge_snapshot(period.id)
+
+        self.assertEqual(export_record.status, ExportStatus.OK)
+        self.assertIsNotNone(output_path)
+        self.assertEqual(export_record.summary_json["missing_eap_count"], 1)
+        self.assertEqual(export_record.summary_json["missing_eap_list"], ["4.1.2"])
+        self.assertIn("EAPs ausentes", export_record.error_message)

@@ -1,4 +1,5 @@
 {% extends "billing/base.html" %}
+{% load billing_format %}
 
 {% block title %}Medicao {{ period.number }}{% endblock %}
 
@@ -12,12 +13,15 @@
 
   <div class="actions">
     <a href="{% url 'billing:project_detail' period.project.id %}">Voltar para obra</a>
-    {% if not is_draft %}
-      {% if boletim_template_available %}
-        <a href="{% url 'billing:measurement_export_xlsx' period.id %}">Gerar Boletim Excel</a>
-      {% else %}
-        <span class="errors">{{ boletim_template_error }}</span>
-      {% endif %}
+    {% if boletim_template_available %}
+      <a href="{% url 'billing:measurement_export_xlsx' period.id %}">Gerar Boletim Excel</a>
+    {% else %}
+      <span class="errors">{{ boletim_template_error }}</span>
+    {% endif %}
+    {% if sienge_template_available %}
+      <a href="{% url 'billing:measurement_export_sienge_snapshot' period.id %}">Gerar Snapshot Sienge</a>
+    {% else %}
+      <span class="errors">{{ sienge_template_error }}</span>
     {% endif %}
   </div>
 
@@ -38,10 +42,10 @@
 
   <div class="card">
     <h2>Resumo atual (recalculado)</h2>
-    <p>Material: {{ total_material }}</p>
-    <p>Mao de obra: {{ total_labor }}</p>
-    <p>Total: {{ total_total }}</p>
-    <p>Total corrigido (preview INCC): {{ indexed_preview }}</p>
+    <p>Material: {{ total_material|br_money }}</p>
+    <p>Mao de obra: {{ total_labor|br_money }}</p>
+    <p>Total: {{ total_total|br_money }}</p>
+    <p>Total corrigido (preview INCC): {{ indexed_preview|br_money }}</p>
     {% if incc_error %}
       <p class="errors">INCC: {{ incc_error }}</p>
     {% else %}
@@ -49,23 +53,23 @@
         INCC code={{ incc_data.code|default:"-" }},
         base={% if incc_data.base_month %}{{ incc_data.base_month|date:"m/Y" }}{% else %}-{% endif %},
         ref={% if incc_data.ref_month %}{{ incc_data.ref_month|date:"m/Y" }}{% else %}-{% endif %},
-        factor={{ incc_data.factor }},
+        factor={{ incc_data.factor|br_decimal:6 }},
         apply_to={{ incc_data.apply_to }}
       </p>
     {% endif %}
 
     {% if period.workflow_status != "DRAFT" %}
       <h3>Snapshot congelado</h3>
-      <p>Snapshot material: {{ period.total_material_snapshot }}</p>
-      <p>Snapshot mao de obra: {{ period.total_labor_snapshot }}</p>
-      <p>Snapshot total: {{ period.total_total_snapshot }}</p>
-      <p>Snapshot total corrigido: {{ period.total_indexed_snapshot }}</p>
+      <p>Snapshot material: {{ period.total_material_snapshot|br_money }}</p>
+      <p>Snapshot mao de obra: {{ period.total_labor_snapshot|br_money }}</p>
+      <p>Snapshot total: {{ period.total_total_snapshot|br_money }}</p>
+      <p>Snapshot total corrigido: {{ period.total_indexed_snapshot|br_money }}</p>
       <p>
         Snapshot INCC:
         code={{ period.index_code_snapshot|default:"-" }},
         base={% if period.index_base_month_snapshot %}{{ period.index_base_month_snapshot|date:"m/Y" }}{% else %}-{% endif %},
         ref={% if period.index_ref_month_snapshot %}{{ period.index_ref_month_snapshot|date:"m/Y" }}{% else %}-{% endif %},
-        factor={{ period.index_factor_snapshot }}
+        factor={{ period.index_factor_snapshot|br_decimal:6 }}
       </p>
     {% endif %}
   </div>
@@ -108,12 +112,12 @@
             <td>{{ row.line.item.eap_code }}</td>
             <td>{{ row.line.item.description }}</td>
             <td>{{ row.line.location.code|default:"-" }}</td>
-            <td>{{ row.effective_qty }}</td>
-            <td>{{ row.previous }}</td>
-            <td>{{ row.accumulated }}</td>
-            <td>{{ row.balance }}</td>
-            <td>{{ row.percent|floatformat:2 }}%</td>
-            <td>{{ row.period_value|floatformat:2 }}</td>
+            <td>{{ row.effective_qty|br_decimal:2 }}</td>
+            <td>{{ row.previous|br_decimal:2 }}</td>
+            <td>{{ row.accumulated|br_decimal:2 }}</td>
+            <td>{{ row.balance|br_decimal:2 }}</td>
+            <td>{{ row.percent|br_decimal:2 }}%</td>
+            <td>{{ row.period_value|br_money }}</td>
             <td>
               {% if is_draft %}
                 <a href="{% url 'billing:line_edit' row.line.id %}">Editar</a>
@@ -126,8 +130,8 @@
           {% if row.excess_qty > 0 %}
             <tr>
               <td colspan="10" class="errors">
-                Excedente detectado: {{ row.excess_qty }} |
-                Total excedente: {{ row.excess_value|floatformat:2 }} |
+                Excedente detectado: {{ row.excess_qty|br_decimal:2 }} |
+                Total excedente: {{ row.excess_value|br_money }} |
                 Justificativa: {{ row.line.excess_justification|default:"-" }}
               </td>
             </tr>
@@ -187,7 +191,18 @@
 
           function parseDecimal(value) {
             if (value === null || value === undefined || value === "") return 0;
-            return Number(String(value).replace(",", ".")) || 0;
+            const text = String(value).trim();
+            const normalized = text.includes(",")
+              ? text.replace(/\./g, "").replace(",", ".")
+              : text;
+            return Number(normalized) || 0;
+          }
+
+          function formatDecimalBr(value) {
+            return Number(value).toLocaleString("pt-BR", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2
+            });
           }
 
           function updateInlineExcess() {
@@ -198,7 +213,7 @@
 
             if (excedente > 0) {
               inlineEl.style.display = "block";
-              msgEl.textContent = "Excedente detectado: " + excedente.toFixed(3);
+              msgEl.textContent = "Excedente detectado: " + formatDecimalBr(excedente);
               if (justificationEl) justificationEl.required = true;
             } else {
               inlineEl.style.display = "none";
@@ -236,9 +251,9 @@
             <td>{{ line.extra_description }}</td>
             <td>{{ line.extra_unit.code|default:"-" }}</td>
             <td>{{ line.location.code|default:"-" }}</td>
-            <td>{{ line.qty_period }}</td>
-            <td>{{ line.extra_pu_material }}</td>
-            <td>{{ line.extra_pu_labor }}</td>
+            <td>{{ line.qty_period|br_decimal:2 }}</td>
+            <td>{{ line.extra_pu_material|br_money }}</td>
+            <td>{{ line.extra_pu_labor|br_money }}</td>
             <td>{{ line.justification|default:"-" }}</td>
             <td>
               {% if is_draft %}
@@ -282,7 +297,7 @@
         {% for settlement in settlements %}
           <tr>
             <td>{{ settlement.event_date }}</td>
-            <td>{{ settlement.amount }}</td>
+            <td>{{ settlement.amount|br_money }}</td>
             <td>{{ settlement.method }}</td>
             <td>{{ settlement.status }}</td>
             <td>{{ settlement.reference|default:"-" }}</td>

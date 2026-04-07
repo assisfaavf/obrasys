@@ -27,6 +27,7 @@ class MeasurementExport(models.Model):
     file_path = models.CharField(max_length=500)
     status = models.CharField(max_length=10, choices=ExportStatus.choices)
     error_message = models.TextField(blank=True)
+    summary_json = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

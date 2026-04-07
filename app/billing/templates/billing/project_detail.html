@@ -7,7 +7,12 @@
   <p class="muted">Client: {{ project.client.name }} | Status: {{ project.status }}</p>
 
   <div class="actions">
-    <a href="{% url 'billing:measurement_new' project.id %}">Nova medicao</a>
+    <a href="{% url 'billing:measurement_new' project.id %}">Nova mediÃ§Ã£o</a>
+    {% if sienge_template_available %}
+      <a href="{% url 'billing:project_export_sienge_master' project.id %}">Gerar/Atualizar Sienge Mestre</a>
+    {% else %}
+      <span class="errors">{{ sienge_template_error }}</span>
+    {% endif %}
   </div>
 
   <h2>Medicoes</h2>
