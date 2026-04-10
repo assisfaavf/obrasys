@@ -6,8 +6,15 @@ from django.core.exceptions import ValidationError
 from django.db.models import Max
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 
-from billing.forms import ExtraLineForm, MeasurementLineForm, MeasurementPeriodForm, SettlementForm
+from billing.forms import (
+    ContractedLineAddForm,
+    ExtraLineForm,
+    MeasurementLineForm,
+    MeasurementPeriodForm,
+    SettlementForm,
+)
 from billing.models import MeasurementLine, MeasurementLineKind, MeasurementPeriod, WorkflowStatus
 from billing.services.measurement_lines import add_or_merge_contracted_line
 from billing.services.measurement_calc import (
@@ -150,7 +157,7 @@ def measurement_detail_view(request, measurement_id: int):
         sienge_template_error = "Template ausente: assets/templates/sienge_template.xlsx."
 
     period_form = MeasurementPeriodForm(instance=period, prefix="period")
-    contracted_form = MeasurementLineForm(period=period, prefix="contracted")
+    contracted_form = ContractedLineAddForm(period=period, prefix="contracted")
     extra_form = ExtraLineForm(period=period, prefix="extra")
     settlement_form = SettlementForm(prefix="settlement")
 
@@ -171,7 +178,7 @@ def measurement_detail_view(request, measurement_id: int):
             if not is_draft:
                 messages.error(request, "Periodo nao esta em DRAFT.")
                 return redirect("billing:measurement_detail", measurement_id=period.id)
-            contracted_form = MeasurementLineForm(request.POST, period=period, prefix="contracted")
+            contracted_form = ContractedLineAddForm(request.POST, period=period, prefix="contracted")
             if contracted_form.is_valid():
                 try:
                     _, merged = add_or_merge_contracted_line(
@@ -179,8 +186,10 @@ def measurement_detail_view(request, measurement_id: int):
                         item=contracted_form.cleaned_data["item"],
                         location=contracted_form.cleaned_data.get("location"),
                         qty_period=contracted_form.cleaned_data["qty_period"],
+                        application_date=contracted_form.cleaned_data.get("application_date"),
                         note=contracted_form.cleaned_data.get("note", ""),
                         excess_justification=contracted_form.cleaned_data.get("excess_justification", ""),
+                        created_by=request.user,
                     )
                 except ValidationError as exc:
                     for message in exc.messages:
@@ -361,6 +370,7 @@ def measurement_detail_view(request, measurement_id: int):
             "indexed_preview": indexed_preview,
             "incc_data": incc_data,
             "incc_error": incc_error,
+            "today_iso": timezone.localdate().isoformat(),
         },
     )
 
@@ -390,11 +400,18 @@ def measurement_line_edit_view(request, line_id: int):
     else:
         form = form_class(instance=line, period=period)
 
+    histories = line.histories.select_related("created_by").order_by(
+        "-application_date",
+        "-created_at",
+        "-id",
+    )
+
     return render(
         request,
         "billing/measurement_line_form.html",
         {
             "form": form,
+            "histories": histories,
             "period": period,
             "line": line,
             "title": title,

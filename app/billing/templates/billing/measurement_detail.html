@@ -162,6 +162,17 @@
           {{ contracted_form.qty_period }}
           {{ contracted_form.qty_period.errors }}
         </p>
+        <p>
+          {{ contracted_form.application_date.label_tag }}
+          {{ contracted_form.application_date }}
+          {{ contracted_form.application_date.errors }}
+        </p>
+        <p>
+          <label for="{{ contracted_form.use_today.id_for_label }}">
+            {{ contracted_form.use_today }} {{ contracted_form.use_today.label }}
+          </label>
+          {{ contracted_form.use_today.errors }}
+        </p>
         <div id="contracted-excess-inline" style="display:none;">
           <p class="errors" id="contracted-excess-msg"></p>
           <p>
@@ -185,9 +196,12 @@
           const balances = JSON.parse(dataEl.textContent || "{}");
           const itemEl = document.getElementById("{{ contracted_form.item.id_for_label }}");
           const qtyEl = document.getElementById("{{ contracted_form.qty_period.id_for_label }}");
+          const applicationDateEl = document.getElementById("{{ contracted_form.application_date.id_for_label }}");
+          const useTodayEl = document.getElementById("{{ contracted_form.use_today.id_for_label }}");
           const inlineEl = document.getElementById("contracted-excess-inline");
           const msgEl = document.getElementById("contracted-excess-msg");
           const justificationEl = document.getElementById("{{ contracted_form.excess_justification.id_for_label }}");
+          const todayIso = "{{ today_iso }}";
 
           function parseDecimal(value) {
             if (value === null || value === undefined || value === "") return 0;
@@ -222,9 +236,21 @@
             }
           }
 
+          function syncTodayOption() {
+            if (!applicationDateEl || !useTodayEl) return;
+            if (useTodayEl.checked) {
+              applicationDateEl.value = todayIso;
+              applicationDateEl.readOnly = true;
+            } else {
+              applicationDateEl.readOnly = false;
+            }
+          }
+
           if (itemEl) itemEl.addEventListener("change", updateInlineExcess);
           if (qtyEl) qtyEl.addEventListener("input", updateInlineExcess);
+          if (useTodayEl) useTodayEl.addEventListener("change", syncTodayOption);
           updateInlineExcess();
+          syncTodayOption();
         })();
       </script>
     {% endif %}

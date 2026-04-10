@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django import forms
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from billing.models import (
     MeasurementLine,
@@ -116,6 +117,72 @@ class MeasurementLineForm(forms.ModelForm):
         if commit:
             instance.save()
         return instance
+
+
+class ContractedLineAddForm(forms.ModelForm):
+    application_date = forms.DateField(
+        required=False,
+        label="Data de aplicacao",
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+    use_today = forms.BooleanField(required=False, label="Hoje")
+
+    class Meta:
+        model = MeasurementLine
+        fields = ["item", "location", "qty_period", "excess_justification", "note"]
+        widgets = {
+            "excess_justification": forms.Textarea(attrs={"rows": 2}),
+        }
+
+    def __init__(self, *args, period: MeasurementPeriod, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.period = period
+        self.fields["item"].queryset = BudgetItem.objects.filter(
+            project=period.project, is_active=True
+        ).order_by("eap_code")
+        self.fields["location"].queryset = ProjectLocation.objects.filter(
+            project=period.project, is_active=True
+        ).order_by("order_index", "code")
+        self.fields["location"].required = False
+        self.fields["excess_justification"].required = False
+        self.fields["excess_justification"].label = "Justificativa do excedente"
+        self.fields["note"].required = False
+
+    def clean_qty_period(self):
+        qty = self.cleaned_data["qty_period"]
+        if qty <= 0:
+            raise ValidationError("quantity_added deve ser > 0.")
+        return qty
+
+    def clean(self):
+        cleaned_data = super().clean()
+        item = cleaned_data.get("item")
+        qty_period = cleaned_data.get("qty_period")
+        application_date = cleaned_data.get("application_date")
+
+        if cleaned_data.get("use_today") or not application_date:
+            application_date = timezone.localdate()
+            cleaned_data["application_date"] = application_date
+
+        if not item or qty_period is None:
+            return cleaned_data
+
+        probe_line = MeasurementLine(
+            period=self.period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=qty_period,
+        )
+        contracted_effective_qty, excess_qty, saldo_antes = split_contracted_and_excess(probe_line)
+
+        cleaned_data["contracted_effective_qty"] = contracted_effective_qty
+        cleaned_data["excess_qty"] = excess_qty
+        cleaned_data["saldo_antes"] = saldo_antes
+
+        if excess_qty > 0 and not (cleaned_data.get("excess_justification") or "").strip():
+            self.add_error("excess_justification", "Justificativa do excedente e obrigatoria.")
+
+        return cleaned_data
 
 
 class ExtraLineForm(forms.ModelForm):

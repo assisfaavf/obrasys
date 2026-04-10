@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 
@@ -215,6 +216,47 @@ class MeasurementLine(models.Model):
         if period_status != WorkflowStatus.DRAFT:
             raise ValidationError("Linhas so podem ser removidas em periodos DRAFT.")
         super().delete(*args, **kwargs)
+
+
+class MeasurementLineHistory(models.Model):
+    line = models.ForeignKey(
+        "billing.MeasurementLine",
+        on_delete=models.CASCADE,
+        related_name="histories",
+    )
+    quantity_added = models.DecimalField(max_digits=14, decimal_places=3)
+    application_date = models.DateField()
+    note = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="measurement_line_histories",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-application_date", "-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["line", "application_date"], name="idx_measure_history_line_app"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.line_id} - {self.quantity_added}"
+
+    def clean(self):
+        super().clean()
+
+        if self.quantity_added is None or self.quantity_added <= 0:
+            raise ValidationError("quantity_added deve ser > 0.")
+
+        if not self.application_date:
+            raise ValidationError("application_date e obrigatoria.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class MeasurementSettlement(models.Model):
