@@ -55,7 +55,7 @@ class ProjectLocation(models.Model):
         ordering = ["project_id", "order_index", "code"]
 
     def __str__(self) -> str:
-        return f"{self.project.name} - {self.code}"
+        return self.code
 
 
 class LocationTemplate(models.Model):

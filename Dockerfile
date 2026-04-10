@@ -21,4 +21,4 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY app/ /app/
 COPY assets/ /assets/
 
-CMD ["bash", "-lc", "python manage.py runserver 0.0.0.0:8000"]
+CMD ["bash", "-lc", "until python manage.py migrate --noinput; do echo 'Aguardando banco...'; sleep 2; done; python manage.py runserver 0.0.0.0:8000"]

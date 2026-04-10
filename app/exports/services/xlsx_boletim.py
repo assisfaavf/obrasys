@@ -12,8 +12,9 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from billing.models import MeasurementLineKind, MeasurementPeriod, WorkflowStatus
-from billing.services.measurement_calc import get_item_cumulative
+from billing.services.measurement_calc import compute_incc_factor, compute_period_totals, get_item_cumulative
 from exports.models import ExportStatus, ExportType, MeasurementExport
+from pricing.models import AdjustmentApplyTo
 from utils.paths import get_exports_dir, get_template_path
 
 TEMPLATE_NAME = "boletim_template.xlsx"
@@ -34,6 +35,10 @@ HEADER_FONT = Font(size=TABLE_FONT_SIZE, bold=True)
 BODY_FONT = Font(size=TABLE_FONT_SIZE)
 TITLE_FONT = Font(size=12, bold=True)
 SUBTITLE_FONT = Font(size=10, bold=True)
+
+QTY_FORMAT = '[$-416] #,##0.00'
+PERCENT_FORMAT = '0.00%'
+CURRENCY_FORMAT = '[$R$-416] #,##0.00'
 
 
 def _to_decimal(value) -> Decimal:
@@ -59,6 +64,97 @@ def _format_period(start_date, end_date) -> str:
     if not start_date or not end_date:
         return "-"
     return f"{start_date:%d/%m/%Y} a {end_date:%d/%m/%Y}"
+
+
+def _format_factor(value) -> str:
+    return f"{_to_decimal(value):.6f}".replace(".", ",")
+
+
+def _compute_indexed_total(
+    *,
+    total_material: Decimal,
+    total_labor: Decimal,
+    apply_to: str,
+    factor: Decimal,
+) -> Decimal:
+    if apply_to == AdjustmentApplyTo.MATERIAL:
+        return (total_material * factor) + total_labor
+    if apply_to == AdjustmentApplyTo.LABOR:
+        return total_material + (total_labor * factor)
+    return (total_material + total_labor) * factor
+
+
+def _build_render_context(period: MeasurementPeriod) -> dict:
+    is_draft = period.workflow_status == WorkflowStatus.DRAFT
+    title = "BOLETIM PRELIMINAR" if is_draft else "BOLETIM DE MEDICAO"
+    status_operational = "RASCUNHO" if is_draft else _to_text(period.workflow_status)
+
+    if is_draft:
+        total_material, total_labor, total_total = compute_period_totals(period.id)
+        try:
+            incc_data = compute_incc_factor(period.project, period.ref_month)
+            total_indexed = _compute_indexed_total(
+                total_material=total_material,
+                total_labor=total_labor,
+                apply_to=incc_data["apply_to"],
+                factor=_to_decimal(incc_data["factor"]),
+            )
+            index_code = incc_data["code"]
+            index_base_month = incc_data["base_month"]
+            index_ref_month = incc_data["ref_month"]
+            index_factor = _to_decimal(incc_data["factor"])
+        except ValidationError:
+            total_indexed = total_total
+            index_code = ""
+            index_base_month = None
+            index_ref_month = None
+            index_factor = Decimal("1.0")
+    else:
+        total_material = _to_decimal(period.total_material_snapshot)
+        total_labor = _to_decimal(period.total_labor_snapshot)
+        total_total = _to_decimal(period.total_total_snapshot)
+        total_indexed = _to_decimal(period.total_indexed_snapshot)
+        index_code = _to_text(period.index_code_snapshot)
+        index_base_month = period.index_base_month_snapshot
+        index_ref_month = period.index_ref_month_snapshot
+        index_factor = _to_decimal(period.index_factor_snapshot)
+
+        snapshots_empty = (
+            total_material == 0 and total_labor == 0 and total_total == 0 and total_indexed == 0
+        )
+        if snapshots_empty and not period.finalized_at:
+            total_material, total_labor, total_total = compute_period_totals(period.id)
+            try:
+                incc_data = compute_incc_factor(period.project, period.ref_month)
+                total_indexed = _compute_indexed_total(
+                    total_material=total_material,
+                    total_labor=total_labor,
+                    apply_to=incc_data["apply_to"],
+                    factor=_to_decimal(incc_data["factor"]),
+                )
+                index_code = incc_data["code"]
+                index_base_month = incc_data["base_month"]
+                index_ref_month = incc_data["ref_month"]
+                index_factor = _to_decimal(incc_data["factor"])
+            except ValidationError:
+                total_indexed = total_total
+                index_code = ""
+                index_base_month = None
+                index_ref_month = None
+                index_factor = Decimal("1.0")
+
+    return {
+        "title": title,
+        "status_operational": status_operational,
+        "total_material": total_material,
+        "total_labor": total_labor,
+        "total_total": total_total,
+        "total_indexed": total_indexed,
+        "index_code": index_code,
+        "index_base_month": index_base_month,
+        "index_ref_month": index_ref_month,
+        "index_factor": index_factor,
+    }
 
 
 def _resolve_discipline(line) -> str | None:
@@ -352,18 +448,18 @@ def _write_grouped_table_block(
     return row + 1
 
 
-def _render_header(ws: Worksheet, period: MeasurementPeriod) -> int:
+def _render_header(ws: Worksheet, period: MeasurementPeriod, context: dict) -> int:
     ws.merge_cells(start_row=2, start_column=WORK_START_COL, end_row=2, end_column=WORK_END_COL)
-    title = _set_cell_value(ws, 2, WORK_START_COL, "BOLETIM DE MEDICAO")
+    title = _set_cell_value(ws, 2, WORK_START_COL, context["title"])
     title.font = TITLE_FONT
     title.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[2].height = 24
 
     incc_value = (
-        f"indice={_to_text(period.index_code_snapshot)}, "
-        f"base={_format_month(period.index_base_month_snapshot)}, "
-        f"ref={_format_month(period.index_ref_month_snapshot)}, "
-        f"fator={_to_decimal(period.index_factor_snapshot):.6f}"
+        f"indice={_to_text(context['index_code'])}, "
+        f"base={_format_month(context['index_base_month'])}, "
+        f"ref={_format_month(context['index_ref_month'])}, "
+        f"fator={_format_factor(context['index_factor'])}"
     )
     metadata_pairs = [
         ("Obra", _to_text(period.project.name)),
@@ -371,7 +467,7 @@ def _render_header(ws: Worksheet, period: MeasurementPeriod) -> int:
         ("Periodo", _format_period(period.start_date, period.end_date)),
         ("Medicao n", f"{period.number:02d}"),
         ("Referencia", _format_month(period.ref_month)),
-        ("Status operacional", _to_text(period.workflow_status)),
+        ("Status operacional", context["status_operational"]),
         ("Status financeiro", _to_text(period.financial_status)),
         ("INCC", incc_value),
     ]
@@ -402,18 +498,18 @@ def _render_header(ws: Worksheet, period: MeasurementPeriod) -> int:
     return row + 1
 
 
-def _render_summary_and_signatures(ws: Worksheet, row: int, period: MeasurementPeriod) -> int:
+def _render_summary_and_signatures(ws: Worksheet, row: int, context: dict) -> int:
     row = _write_block_title(ws, row, "D) RESUMO FINANCEIRO + ASSINATURAS")
 
     summary_rows = [
-        ["Total material", _to_decimal(period.total_material_snapshot)],
-        ["Total mao de obra", _to_decimal(period.total_labor_snapshot)],
-        ["Total medicao", _to_decimal(period.total_total_snapshot)],
-        ["Total corrigido (INCC)", _to_decimal(period.total_indexed_snapshot)],
-        ["INCC indice", _to_text(period.index_code_snapshot)],
-        ["INCC base", _format_month(period.index_base_month_snapshot)],
-        ["INCC referencia", _format_month(period.index_ref_month_snapshot)],
-        ["INCC fator", _to_decimal(period.index_factor_snapshot)],
+        ["Total material", context["total_material"]],
+        ["Total mao de obra", context["total_labor"]],
+        ["Total medicao", context["total_total"]],
+        ["Total corrigido (INCC)", context["total_indexed"]],
+        ["INCC indice", _to_text(context["index_code"])],
+        ["INCC base", _format_month(context["index_base_month"])],
+        ["INCC referencia", _format_month(context["index_ref_month"])],
+        ["INCC fator", _format_factor(context["index_factor"])],
     ]
 
     row = _write_table(
@@ -423,7 +519,7 @@ def _render_summary_and_signatures(ws: Worksheet, row: int, period: MeasurementP
         rows=summary_rows,
         column_widths=[30, 30],
         left_align_cols={0},
-        number_formats={1: '#,##0.00'},
+        number_formats={1: CURRENCY_FORMAT},
         start_col_override=6,  # F:G
     )
 
@@ -454,16 +550,14 @@ def _prepare_sheet_for_render(ws: Worksheet) -> None:
 def _add_logo_first_row(ws: Worksheet) -> None:
     try:
         logo_path = get_template_path(LOGO_NAME)
-    except FileNotFoundError as exc:
-        raise ValidationError("Logo nao encontrada: assets/templates/Logo-rem.png.") from exc
+    except FileNotFoundError:
+        return
 
     try:
         from openpyxl.drawing.image import Image as OpenPyxlImage
         logo = OpenPyxlImage(str(logo_path))
-    except ImportError as exc:
-        raise ValidationError(
-            "Dependencia ausente para inserir logo no XLSX. Instale Pillow (pip install Pillow)."
-        ) from exc
+    except ImportError:
+        return
     except Exception as exc:
         raise ValidationError(f"Nao foi possivel carregar a logo ({logo_path.name}): {exc}") from exc
 
@@ -479,7 +573,7 @@ def _add_logo_first_row(ws: Worksheet) -> None:
     ws.add_image(logo)
 
 
-def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict) -> None:
+def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict, context: dict) -> None:
     _prepare_sheet_for_render(ws)
     _add_logo_first_row(ws)
     ws.sheet_view.zoomScale = 90
@@ -488,7 +582,7 @@ def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict) -> None:
     ws.page_margins.top = 0.5
     ws.page_margins.bottom = 0.5
 
-    row = _render_header(ws, period)
+    row = _render_header(ws, period, context)
 
     row = _write_grouped_table_block(
         ws,
@@ -510,7 +604,7 @@ def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict) -> None:
         ],
         column_widths=[12, 44, 10, 8, 12, 12, 12, 12, 8, 14],
         left_align_cols={1},
-        number_formats={4: '#,##0.000', 5: '#,##0.000', 6: '#,##0.000', 7: '#,##0.000', 8: '0.00%', 9: '#,##0.00'},
+        number_formats={4: QTY_FORMAT, 5: QTY_FORMAT, 6: QTY_FORMAT, 7: QTY_FORMAT, 8: PERCENT_FORMAT, 9: CURRENCY_FORMAT},
         empty_message="Sem itens contratados com quantidade no periodo.",
     )
 
@@ -523,7 +617,7 @@ def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict) -> None:
         headers=["Descricao", "Local", "Und", "Qtd", "Total", "Justificativa"],
         column_widths=[44, 10, 8, 12, 14, 28],
         left_align_cols={0, 5},
-        number_formats={3: '#,##0.000', 4: '#,##0.00'},
+        number_formats={3: QTY_FORMAT, 4: CURRENCY_FORMAT},
         empty_message="Sem itens extras com quantidade no periodo.",
     )
 
@@ -536,10 +630,10 @@ def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict) -> None:
             rows=data["overflow_rows"],
             column_widths=[12, 44, 10, 8, 12, 14, 28],
             left_align_cols={1, 6},
-            number_formats={4: '#,##0.000', 5: '#,##0.00'},
+            number_formats={4: QTY_FORMAT, 5: CURRENCY_FORMAT},
         )
 
-    _render_summary_and_signatures(ws, row, period)
+    _render_summary_and_signatures(ws, row, context)
 
 
 @transaction.atomic
@@ -561,9 +655,6 @@ def generate_xlsx_boletim(period_id: int):
     relative_file_path = str(output_path.relative_to(exports_dir))
 
     try:
-        if period.workflow_status == WorkflowStatus.DRAFT:
-            raise ValidationError("Nao e permitido gerar boletim para periodo em DRAFT.")
-
         try:
             template_path = get_template_path(TEMPLATE_NAME)
         except FileNotFoundError as exc:
@@ -574,12 +665,13 @@ def generate_xlsx_boletim(period_id: int):
         data = _build_period_data(period)
         if not data["has_rows"]:
             raise ValidationError("Nao ha linhas contratadas ou extras para gerar o boletim.")
+        context = _build_render_context(period)
 
         copy2(template_path, output_path)
 
         workbook = load_workbook(output_path)
         sheet = workbook[workbook.sheetnames[0]]
-        _render_sheet(sheet, period, data)
+        _render_sheet(sheet, period, data, context)
         workbook.save(output_path)
 
         export_record = MeasurementExport.objects.create(

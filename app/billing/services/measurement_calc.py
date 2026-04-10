@@ -25,6 +25,13 @@ def _q_money(value: Decimal) -> Decimal:
     return value.quantize(MONEY_Q, rounding=ROUND_HALF_UP)
 
 
+def _format_br_decimal(value: Decimal, places: int = 2) -> str:
+    quant = Decimal("1").scaleb(-places)
+    normalized = value.quantize(quant, rounding=ROUND_HALF_UP)
+    formatted = f"{normalized:,.{places}f}"
+    return formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
 def get_item_cumulative(project, item_id: int, up_to_period_number: int) -> Decimal:
     if up_to_period_number <= 0:
         return Decimal("0")
@@ -179,8 +186,13 @@ def compute_incc_factor(project, ref_month):
         )
     if base_value <= 0:
         raise ValidationError("Valor base do INCC deve ser maior que zero.")
+    if ref_value <= 0:
+        raise ValidationError("Valor de referencia do INCC deve ser maior que zero.")
 
-    factor = (Decimal(ref_value) / Decimal(base_value)).quantize(FACTOR_Q, rounding=ROUND_HALF_UP)
+    raw_factor = Decimal(ref_value) / Decimal(base_value)
+    # Business rule: INCC correction must not reduce measurement totals.
+    factor = raw_factor if raw_factor >= Decimal("1") else (Decimal("1") / raw_factor)
+    factor = factor.quantize(FACTOR_Q, rounding=ROUND_HALF_UP)
     return {
         "code": adjustment.price_index.code,
         "base_month": adjustment.base_month,
@@ -219,7 +231,7 @@ def validate_finalize(period_id: int) -> list[str]:
             if excess_qty > 0 and not (line.excess_justification or "").strip():
                 errors.append(
                     f"Linha {line.id}: justificativa obrigatoria para excedente "
-                    f"(excedente {excess_qty})."
+                    f"(excedente {_format_br_decimal(excess_qty, 2)})."
                 )
 
         if line.line_kind == MeasurementLineKind.EXTRA:

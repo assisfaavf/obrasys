@@ -129,6 +129,31 @@ class MeasurementCalcTests(TestCase):
         self.assertEqual(finalized.total_total_snapshot, Decimal("30.00"))
         self.assertEqual(finalized.total_indexed_snapshot, Decimal("36.00"))
 
+    def test_finalize_period_with_incc_never_reduces_total(self):
+        period = self._create_period(1, date(2026, 2, 1))
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind="CONTRACTED",
+            item=self.item,
+            qty_period=Decimal("2"),
+        )
+
+        index = PriceIndex.objects.create(code="INCC_DEC", name="INCC decrescente")
+        PriceIndexValue.objects.create(price_index=index, ref_month=date(2026, 1, 1), value=Decimal("120"))
+        PriceIndexValue.objects.create(price_index=index, ref_month=date(2026, 2, 1), value=Decimal("100"))
+        ProjectPriceAdjustment.objects.create(
+            project=self.project,
+            price_index=index,
+            base_month=date(2026, 1, 1),
+            apply_to="TOTAL",
+            is_active=True,
+        )
+
+        finalized = finalize_period(period.id)
+        self.assertEqual(finalized.index_factor_snapshot, Decimal("1.200000"))
+        self.assertEqual(finalized.total_total_snapshot, Decimal("30.00"))
+        self.assertEqual(finalized.total_indexed_snapshot, Decimal("36.00"))
+
     def test_split_contracted_and_excess_qty_less_than_saldo(self):
         period_prev = self._create_period(1, date(2026, 1, 1))
         MeasurementLine.objects.create(

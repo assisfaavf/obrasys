@@ -72,3 +72,17 @@ class ProjectDetailLocationTemplateTests(TestCase):
             list(self.project.locations.order_by("order_index").values_list("code", flat=True)),
             ["TOR", "GAR"],
         )
+
+
+class ProjectLocationDisplayTests(TestCase):
+    def test_project_location_str_returns_only_code(self):
+        client = Client.objects.create(name="Cliente Local")
+        project = Project.objects.create(name="Projeto Local", client=client)
+        location = ProjectLocation.objects.create(
+            project=project,
+            code="APT-101",
+            name="Apartamento 101",
+            order_index=1,
+        )
+
+        self.assertEqual(str(location), "APT-101")

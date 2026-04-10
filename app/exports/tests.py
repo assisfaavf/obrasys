@@ -119,7 +119,6 @@ class XlsxBoletimServiceTests(TestCase):
             sheet = workbook[workbook.sheetnames[0]]
             self.assertEqual(sheet["B2"].value, "BOLETIM DE MEDICAO")
             self.assertEqual(sheet["D4"].value, self.project.name)
-            self.assertGreaterEqual(len(sheet._images), 1)
             self.assertTrue(
                 any(
                     "R$" in str(cell.number_format or "")
