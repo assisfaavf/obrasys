@@ -110,13 +110,7 @@
         {% for row in contracted_line_stats %}
           <tr>
             <td>{{ row.line.item.eap_code }}</td>
-            <td>
-              {{ row.line.item.description }}
-              {% if row.line.is_generated_additional %}
-                <br>
-                <span class="muted">Gerado por material adicional de {{ row.line.generated_from_line.item.eap_code }}</span>
-              {% endif %}
-            </td>
+            <td>{{ row.line.item.description }}</td>
             <td>{{ row.line.location.code|default:"-" }}</td>
             <td>{{ row.effective_qty|br_decimal:2 }}</td>
             <td>{{ row.previous|br_decimal:2 }}</td>

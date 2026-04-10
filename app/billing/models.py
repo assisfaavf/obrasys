@@ -224,8 +224,6 @@ class MeasurementLine(models.Model):
                 raise ValidationError("Linhas EXTRA exigem unidade.")
 
         if self.is_generated_additional:
-            if not self.generated_from_line_id:
-                raise ValidationError("Linhas geradas exigem generated_from_line.")
             if self.line_kind != MeasurementLineKind.CONTRACTED:
                 raise ValidationError("Linhas geradas devem ser CONTRACTED.")
             if self.additional_materials_base_qty != Decimal("0"):
@@ -250,7 +248,15 @@ class MeasurementLine(models.Model):
         )
         if period_status != WorkflowStatus.DRAFT:
             raise ValidationError("Linhas so podem ser removidas em periodos DRAFT.")
+        period = self.period
+        should_rebuild_generated = (
+            self.line_kind == MeasurementLineKind.CONTRACTED and not self.is_generated_additional
+        )
         super().delete(*args, **kwargs)
+        if should_rebuild_generated:
+            from billing.services.measurement_lines import rebuild_generated_additional_lines
+
+            rebuild_generated_additional_lines(period=period)
 
 
 class MeasurementLineHistory(models.Model):
@@ -262,6 +268,15 @@ class MeasurementLineHistory(models.Model):
     quantity_added = models.DecimalField(max_digits=14, decimal_places=3)
     application_date = models.DateField()
     note = models.TextField(blank=True)
+    source_line = models.ForeignKey(
+        "billing.MeasurementLine",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="source_history_entries",
+    )
+    source_item_snapshot = models.CharField(max_length=255, blank=True)
+    is_generated_additional_entry = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -288,6 +303,9 @@ class MeasurementLineHistory(models.Model):
 
         if not self.application_date:
             raise ValidationError("application_date e obrigatoria.")
+
+        if self.is_generated_additional_entry and not self.source_item_snapshot:
+            raise ValidationError("Entradas geradas exigem source_item_snapshot.")
 
     def save(self, *args, **kwargs):
         self.full_clean()

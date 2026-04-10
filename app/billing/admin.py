@@ -34,7 +34,14 @@ class MeasurementSettlementAdmin(admin.ModelAdmin):
 
 @admin.register(MeasurementLineHistory)
 class MeasurementLineHistoryAdmin(admin.ModelAdmin):
-    list_display = ("line", "application_date", "quantity_added", "created_by", "created_at")
+    list_display = (
+        "line",
+        "application_date",
+        "quantity_added",
+        "source_item_snapshot",
+        "created_by",
+        "created_at",
+    )
     list_filter = ("line__period__project", "application_date")
     search_fields = (
         "line__period__project__name",

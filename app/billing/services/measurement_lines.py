@@ -35,6 +35,9 @@ def _create_history(
     quantity_added: Decimal,
     application_date,
     note: str = "",
+    source_line: MeasurementLine | None = None,
+    source_item_snapshot: str = "",
+    is_generated_additional_entry: bool = False,
     created_by=None,
 ) -> None:
     quantity_added = _q_qty(quantity_added)
@@ -46,15 +49,17 @@ def _create_history(
         quantity_added=quantity_added,
         application_date=application_date,
         note=(note or "").strip(),
+        source_line=source_line,
+        source_item_snapshot=(source_item_snapshot or "").strip(),
+        is_generated_additional_entry=is_generated_additional_entry,
         created_by=created_by,
     )
 
 
-def _generated_note(parent_line: MeasurementLine, relation: BudgetItemAdditionalMaterial) -> str:
-    parts = [f"Gerado por material adicional de {parent_line.item}"]
-    if (relation.note or "").strip():
-        parts.append((relation.note or "").strip())
-    return " | ".join(parts)[:255]
+def _generated_note(parent_line: MeasurementLine) -> str:
+    if parent_line.item:
+        return f"Gerado automaticamente por: {parent_line.item.description}"
+    return "Gerado automaticamente por material adicional."
 
 
 def _prepare_manual_contracted_line(
@@ -80,47 +85,32 @@ def _prepare_manual_contracted_line(
     return line
 
 
-def _active_additional_materials(parent_line: MeasurementLine) -> list[BudgetItemAdditionalMaterial]:
-    if not parent_line.item_id:
-        return []
-
-    return list(
-        BudgetItemAdditionalMaterial.objects.select_related("additional_item")
-        .filter(
-            parent_item_id=parent_line.item_id,
-            is_active=True,
-            additional_item__is_active=True,
-        )
-        .order_by("additional_item__eap_code", "id")
-    )
-
-
 def _save_generated_line(
     *,
-    parent_line: MeasurementLine,
-    relation: BudgetItemAdditionalMaterial,
+    period: MeasurementPeriod,
+    item,
+    location,
     generated_line: MeasurementLine | None,
     generated_qty: Decimal,
 ) -> MeasurementLine:
     generated_line = generated_line or MeasurementLine(
-        period=parent_line.period,
+        period=period,
         line_kind=MeasurementLineKind.CONTRACTED,
-        item=relation.additional_item,
-        generated_from_line=parent_line,
+        item=item,
         is_generated_additional=True,
     )
-    generated_line.period = parent_line.period
+    generated_line.period = period
     generated_line.line_kind = MeasurementLineKind.CONTRACTED
-    generated_line.item = relation.additional_item
-    generated_line.location = parent_line.location
-    generated_line.generated_from_line = parent_line
+    generated_line.item = item
+    generated_line.location = location
+    generated_line.generated_from_line = None
     generated_line.extra_description = ""
     generated_line.extra_unit = None
     generated_line.extra_pu_material = Decimal("0")
     generated_line.extra_pu_labor = Decimal("0")
     generated_line.qty_period = generated_qty
     generated_line.justification = ""
-    generated_line.note = _generated_note(parent_line, relation)
+    generated_line.note = ""
     generated_line.is_generated_additional = True
     generated_line.use_additional_materials = False
     generated_line.additional_materials_base_qty = Decimal("0")
@@ -129,6 +119,135 @@ def _save_generated_line(
     generated_line.excess_justification = GENERATED_EXCESS_JUSTIFICATION if excess_qty > 0 else ""
     generated_line.save()
     return generated_line
+
+
+def _source_item_snapshot(parent_line: MeasurementLine) -> str:
+    if parent_line.item:
+        return f"{parent_line.item.eap_code} - {parent_line.item.description}"[:255]
+    return f"Linha {parent_line.id}"[:255]
+
+
+def _source_application_date(parent_line: MeasurementLine):
+    latest_history = parent_line.histories.order_by("-application_date", "-created_at", "-id").first()
+    if latest_history:
+        return latest_history.application_date
+    return timezone.localdate()
+
+
+def _active_additional_materials_by_parent(parent_item_ids: list[int]) -> dict[int, list[BudgetItemAdditionalMaterial]]:
+    if not parent_item_ids:
+        return {}
+
+    relations = (
+        BudgetItemAdditionalMaterial.objects.select_related("additional_item")
+        .filter(
+            parent_item_id__in=parent_item_ids,
+            is_active=True,
+            additional_item__is_active=True,
+        )
+        .order_by("parent_item_id", "additional_item__eap_code", "id")
+    )
+    relation_map: dict[int, list[BudgetItemAdditionalMaterial]] = {}
+    for relation in relations:
+        relation_map.setdefault(relation.parent_item_id, []).append(relation)
+    return relation_map
+
+
+def rebuild_generated_additional_lines(
+    *,
+    period: MeasurementPeriod,
+    created_by=None,
+) -> None:
+    existing_generated_lines = list(
+        MeasurementLine.objects.select_for_update()
+        .filter(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            is_generated_additional=True,
+        )
+        .order_by("id")
+    )
+    retained_by_key: dict[tuple[int | None, int | None], MeasurementLine] = {}
+    duplicated_lines: list[MeasurementLine] = []
+    for generated_line in existing_generated_lines:
+        key = (generated_line.item_id, generated_line.location_id)
+        if key in retained_by_key:
+            duplicated_lines.append(generated_line)
+            continue
+        retained_by_key[key] = generated_line
+
+    for generated_line in existing_generated_lines:
+        generated_line.histories.filter(is_generated_additional_entry=True).delete()
+
+    source_lines = list(
+        MeasurementLine.objects.select_related("item", "location")
+        .filter(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            is_generated_additional=False,
+            additional_materials_base_qty__gt=0,
+        )
+        .order_by("id")
+    )
+    relation_map = _active_additional_materials_by_parent(
+        [line.item_id for line in source_lines if line.item_id]
+    )
+    grouped_contributions: dict[tuple[int | None, int | None], list[dict]] = {}
+
+    for source_line in source_lines:
+        if not source_line.item_id:
+            continue
+        for relation in relation_map.get(source_line.item_id, []):
+            generated_qty = _q_qty(
+                (source_line.additional_materials_base_qty or Decimal("0")) * relation.quantity_per_unit
+            )
+            if generated_qty <= 0:
+                continue
+            key = (relation.additional_item_id, source_line.location_id)
+            grouped_contributions.setdefault(key, []).append(
+                {
+                    "item": relation.additional_item,
+                    "location": source_line.location,
+                    "quantity_added": generated_qty,
+                    "application_date": _source_application_date(source_line),
+                    "note": _generated_note(source_line),
+                    "source_line": source_line,
+                    "source_item_snapshot": _source_item_snapshot(source_line),
+                }
+            )
+
+    for key, contributions in grouped_contributions.items():
+        generated_line = retained_by_key.pop(key, None)
+        total_qty = _q_qty(sum((entry["quantity_added"] for entry in contributions), Decimal("0")))
+        if total_qty <= 0:
+            continue
+
+        generated_line = _save_generated_line(
+            period=period,
+            item=contributions[0]["item"],
+            location=contributions[0]["location"],
+            generated_line=generated_line,
+            generated_qty=total_qty,
+        )
+
+        for entry in contributions:
+            _create_history(
+                line=generated_line,
+                quantity_added=entry["quantity_added"],
+                application_date=entry["application_date"],
+                note=entry["note"],
+                source_line=entry["source_line"],
+                source_item_snapshot=entry["source_item_snapshot"],
+                is_generated_additional_entry=True,
+                created_by=created_by,
+            )
+
+    for generated_line in duplicated_lines:
+        generated_line.delete()
+    for generated_line in retained_by_key.values():
+        generated_line.delete()
+
+    refresh_period_excess(period.id)
 
 
 def sync_generated_additional_lines(
@@ -141,48 +260,7 @@ def sync_generated_additional_lines(
     if parent_line.is_generated_additional:
         raise ValidationError("Linhas geradas nao podem sincronizar materiais adicionais.")
 
-    application_date = application_date or timezone.localdate()
-    history_delta_base_qty = _q_qty(history_delta_base_qty or Decimal("0"))
-
-    existing_generated = {
-        line.item_id: line
-        for line in MeasurementLine.objects.select_for_update()
-        .select_related("item")
-        .filter(generated_from_line=parent_line)
-    }
-
-    base_qty = _q_qty(parent_line.additional_materials_base_qty)
-    relations = _active_additional_materials(parent_line)
-
-    for relation in relations:
-        generated_qty = _q_qty(base_qty * relation.quantity_per_unit)
-        generated_line = existing_generated.pop(relation.additional_item_id, None)
-
-        if generated_qty <= 0:
-            if generated_line is not None:
-                generated_line.delete()
-            continue
-
-        generated_line = _save_generated_line(
-            parent_line=parent_line,
-            relation=relation,
-            generated_line=generated_line,
-            generated_qty=generated_qty,
-        )
-
-        if history_delta_base_qty > 0:
-            _create_history(
-                line=generated_line,
-                quantity_added=history_delta_base_qty * relation.quantity_per_unit,
-                application_date=application_date,
-                note=generated_line.note,
-                created_by=created_by,
-            )
-
-    for generated_line in existing_generated.values():
-        generated_line.delete()
-
-    refresh_period_excess(parent_line.period_id)
+    rebuild_generated_additional_lines(period=parent_line.period, created_by=created_by)
 
 
 @transaction.atomic
@@ -206,7 +284,6 @@ def add_or_merge_contracted_line(
 
     existing_line = (
         MeasurementLine.objects.select_for_update()
-        .select_related("period__project", "item")
         .filter(
             period=period,
             line_kind=MeasurementLineKind.CONTRACTED,

@@ -284,8 +284,6 @@ def measurement_detail_view(request, measurement_id: int):
             "item",
             "location",
             "extra_unit",
-            "generated_from_line",
-            "generated_from_line__item",
         ).order_by("id")
     )
     contracted_lines = [line for line in lines if line.line_kind == MeasurementLineKind.CONTRACTED]
@@ -418,17 +416,14 @@ def measurement_detail_view(request, measurement_id: int):
 
 @staff_member_required
 def measurement_line_edit_view(request, line_id: int):
-    line = get_object_or_404(
-        MeasurementLine.objects.select_related("period", "item", "generated_from_line"),
-        pk=line_id,
-    )
+    line = get_object_or_404(MeasurementLine.objects.select_related("period", "item"), pk=line_id)
     period = line.period
 
     if period.workflow_status != WorkflowStatus.DRAFT:
         messages.error(request, "Periodo nao esta em DRAFT.")
         return redirect("billing:measurement_detail", measurement_id=period.id)
 
-    if line.is_generated_additional:
+    if line.is_generated_additional and request.method == "POST":
         messages.error(
             request,
             "Linhas geradas por material adicional sao atualizadas pela linha principal.",
@@ -438,6 +433,9 @@ def measurement_line_edit_view(request, line_id: int):
     if line.line_kind == MeasurementLineKind.EXTRA:
         form_class = ExtraLineForm
         title = "Editar linha extra"
+    elif line.is_generated_additional:
+        form_class = None
+        title = "Detalhe do material adicional"
     else:
         form_class = ContractedLineEditForm
         title = "Editar linha contratada"
@@ -460,8 +458,10 @@ def measurement_line_edit_view(request, line_id: int):
                 )
             messages.success(request, "Linha atualizada.")
             return redirect("billing:measurement_detail", measurement_id=period.id)
-    else:
+    elif form_class is not None:
         form = form_class(instance=line, period=period)
+    else:
+        form = None
 
     histories = line.histories.select_related("created_by").order_by(
         "-application_date",
@@ -469,7 +469,7 @@ def measurement_line_edit_view(request, line_id: int):
         "-id",
     )
     item_additional_materials = {}
-    if line.line_kind == MeasurementLineKind.CONTRACTED:
+    if line.line_kind == MeasurementLineKind.CONTRACTED and form is not None:
         item_additional_materials = _build_additional_materials_map(form.fields["item"].queryset)
 
     return render(
@@ -489,7 +489,7 @@ def measurement_line_edit_view(request, line_id: int):
 @staff_member_required
 def measurement_line_delete_view(request, line_id: int):
     line = get_object_or_404(
-        MeasurementLine.objects.select_related("period", "generated_from_line"),
+        MeasurementLine.objects.select_related("period"),
         pk=line_id,
     )
     period = line.period
