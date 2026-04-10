@@ -119,7 +119,7 @@
             <td>{{ row.percent|br_decimal:2 }}%</td>
             <td>{{ row.period_value|br_money }}</td>
             <td>
-              {% if is_draft and not row.line.is_generated_additional %}
+              {% if is_draft %}
                 <a href="{% url 'billing:line_edit' row.line.id %}">Editar</a>
                 <a href="{% url 'billing:line_delete' row.line.id %}">Excluir</a>
               {% else %}

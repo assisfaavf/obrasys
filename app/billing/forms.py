@@ -196,6 +196,18 @@ class ContractedLineEditForm(MeasurementLineForm):
                 (self.instance.additional_materials_base_qty or Decimal("0")) > Decimal("0")
             )
 
+    def clean(self):
+        cleaned_data = super().clean()
+        qty_period = cleaned_data.get("qty_period")
+        use_additional_materials = cleaned_data.get("use_additional_materials", False)
+
+        if qty_period is not None:
+            self.instance.additional_materials_base_qty = (
+                qty_period if use_additional_materials else Decimal("0")
+            )
+        self.instance.use_additional_materials = bool(use_additional_materials)
+        return cleaned_data
+
 
 class ExtraLineForm(forms.ModelForm):
     class Meta:

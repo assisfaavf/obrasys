@@ -630,6 +630,58 @@ class ContractedLineMergeTests(TestCase):
         self.assertEqual(screw_line.qty_period, Decimal("29.000"))
         self.assertEqual(screw_line.histories.count(), 2)
 
+    def test_reducing_parent_quantity_subtracts_from_consolidated_additional_line(self):
+        line_a, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            application_date=date(2026, 4, 8),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+        add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item_b,
+            location=self.location_ter,
+            qty_period=Decimal("5.000"),
+            application_date=date(2026, 4, 9),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+
+        response = self.client.post(
+            reverse("billing:line_edit", args=[line_a.id]),
+            {
+                "item": str(self.item.id),
+                "location": str(self.location_ter.id),
+                "qty_period": "4.000",
+                "note": "reduzido",
+                "excess_justification": "",
+                "use_additional_materials": "on",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        screw_line = MeasurementLine.objects.get(
+            period=self.period,
+            is_generated_additional=True,
+            item=self.screw_item,
+            location=self.location_ter,
+        )
+        self.assertEqual(screw_line.qty_period, Decimal("13.000"))
+        self.assertEqual(
+            list(
+                screw_line.histories.order_by("-application_date", "-created_at", "-id").values_list(
+                    "source_item_snapshot", "quantity_added"
+                )
+            ),
+            [
+                ("6.6.4 - Tomada 10A", Decimal("5.000")),
+                ("6.6.1 - Cabo 2,5mm", Decimal("8.000")),
+            ],
+        )
+
     def test_deleting_parent_line_recalculates_consolidated_additional_line(self):
         line_a, _ = add_or_merge_contracted_line(
             period=self.period,
@@ -680,3 +732,25 @@ class ContractedLineMergeTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Gerado por material adicional de")
+
+    def test_measurement_grid_shows_actions_for_generated_additional_lines(self):
+        add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            application_date=date(2026, 4, 8),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+        generated_line = MeasurementLine.objects.get(
+            period=self.period,
+            is_generated_additional=True,
+            item=self.screw_item,
+            location=self.location_ter,
+        )
+
+        response = self.client.get(reverse("billing:measurement_detail", args=[self.period.id]))
+
+        self.assertContains(response, reverse("billing:line_edit", args=[generated_line.id]))
+        self.assertContains(response, reverse("billing:line_delete", args=[generated_line.id]))

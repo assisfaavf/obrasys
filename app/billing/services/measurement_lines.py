@@ -153,6 +153,7 @@ def _active_additional_materials_by_parent(parent_item_ids: list[int]) -> dict[i
     return relation_map
 
 
+@transaction.atomic
 def rebuild_generated_additional_lines(
     *,
     period: MeasurementPeriod,

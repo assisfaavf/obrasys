@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 
 
 class WorkflowStatus(models.TextChoices):
@@ -241,22 +241,23 @@ class MeasurementLine(models.Model):
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        period_status = (
-            MeasurementPeriod.objects.filter(pk=self.period_id)
-            .values_list("workflow_status", flat=True)
-            .first()
-        )
-        if period_status != WorkflowStatus.DRAFT:
-            raise ValidationError("Linhas so podem ser removidas em periodos DRAFT.")
-        period = self.period
-        should_rebuild_generated = (
-            self.line_kind == MeasurementLineKind.CONTRACTED and not self.is_generated_additional
-        )
-        super().delete(*args, **kwargs)
-        if should_rebuild_generated:
-            from billing.services.measurement_lines import rebuild_generated_additional_lines
+        with transaction.atomic():
+            period_status = (
+                MeasurementPeriod.objects.filter(pk=self.period_id)
+                .values_list("workflow_status", flat=True)
+                .first()
+            )
+            if period_status != WorkflowStatus.DRAFT:
+                raise ValidationError("Linhas so podem ser removidas em periodos DRAFT.")
+            period = self.period
+            should_rebuild_generated = (
+                self.line_kind == MeasurementLineKind.CONTRACTED and not self.is_generated_additional
+            )
+            super().delete(*args, **kwargs)
+            if should_rebuild_generated:
+                from billing.services.measurement_lines import rebuild_generated_additional_lines
 
-            rebuild_generated_additional_lines(period=period)
+                rebuild_generated_additional_lines(period=period)
 
 
 class MeasurementLineHistory(models.Model):

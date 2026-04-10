@@ -423,13 +423,6 @@ def measurement_line_edit_view(request, line_id: int):
         messages.error(request, "Periodo nao esta em DRAFT.")
         return redirect("billing:measurement_detail", measurement_id=period.id)
 
-    if line.is_generated_additional and request.method == "POST":
-        messages.error(
-            request,
-            "Linhas geradas por material adicional sao atualizadas pela linha principal.",
-        )
-        return redirect("billing:measurement_detail", measurement_id=period.id)
-
     if line.line_kind == MeasurementLineKind.EXTRA:
         form_class = ExtraLineForm
         title = "Editar linha extra"
@@ -441,6 +434,12 @@ def measurement_line_edit_view(request, line_id: int):
         title = "Editar linha contratada"
 
     if request.method == "POST":
+        if line.is_generated_additional:
+            messages.error(
+                request,
+                "Materiais adicionais gerados sao recalculados pelas linhas de origem.",
+            )
+            return redirect("billing:line_edit", line_id=line.id)
         form = form_class(request.POST, instance=line, period=period)
         if form.is_valid():
             if line.line_kind == MeasurementLineKind.EXTRA:
@@ -493,13 +492,6 @@ def measurement_line_delete_view(request, line_id: int):
         pk=line_id,
     )
     period = line.period
-
-    if line.is_generated_additional:
-        messages.error(
-            request,
-            "Linhas geradas por material adicional sao removidas a partir da linha principal.",
-        )
-        return redirect("billing:measurement_detail", measurement_id=period.id)
 
     if request.method == "POST":
         try:
