@@ -1,0 +1,17 @@
+{% extends "billing/base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  <p class="muted">Medicao {{ period.number }} - {{ period.project.name }}</p>
+  <p class="muted">Linha: {{ line.item.description }}{% if line.location %} | {{ line.location.code }}{% endif %}</p>
+
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Salvar</button>
+  </form>
+
+  <p><a href="{% url 'billing:line_edit' line.id %}">Voltar para a linha</a></p>
+{% endblock %}

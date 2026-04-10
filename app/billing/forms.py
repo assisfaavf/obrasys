@@ -7,6 +7,7 @@ from django.utils import timezone
 from billing.models import (
     MeasurementLine,
     MeasurementLineKind,
+    MeasurementLineHistory,
     MeasurementPeriod,
     MeasurementSettlement,
 )
@@ -259,6 +260,43 @@ class ExtraLineForm(forms.ModelForm):
         if commit:
             instance.save()
         return instance
+
+
+class MeasurementLineHistoryEditForm(forms.ModelForm):
+    uses_additional_materials = forms.BooleanField(required=False, label="Usar materiais adicionais neste lancamento")
+
+    class Meta:
+        model = MeasurementLineHistory
+        fields = ["quantity_added", "application_date", "note"]
+        widgets = {
+            "application_date": forms.DateInput(attrs={"type": "date"}),
+            "note": forms.Textarea(attrs={"rows": 2}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["note"].required = False
+        if not self.is_bound:
+            self.initial["uses_additional_materials"] = (
+                (self.instance.additional_materials_quantity or Decimal("0")) > Decimal("0")
+            )
+
+    def clean_quantity_added(self):
+        quantity_added = self.cleaned_data["quantity_added"]
+        if quantity_added <= 0:
+            raise ValidationError("quantity_added deve ser > 0.")
+        return quantity_added
+
+    def clean(self):
+        cleaned_data = super().clean()
+        quantity_added = cleaned_data.get("quantity_added")
+        uses_additional_materials = cleaned_data.get("uses_additional_materials", False)
+
+        if quantity_added is not None:
+            self.instance.additional_materials_quantity = (
+                quantity_added if uses_additional_materials else Decimal("0")
+            )
+        return cleaned_data
 
 
 class SettlementForm(forms.ModelForm):

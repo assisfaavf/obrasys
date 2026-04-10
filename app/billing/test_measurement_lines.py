@@ -365,6 +365,120 @@ class ContractedLineMergeTests(TestCase):
             ["data mais nova", "mais recente no mesmo dia", "mais antigo", "base"],
         )
 
+    def test_history_row_can_be_edited_and_recalculates_line_total(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("3.000"),
+            application_date=date(2026, 4, 4),
+            note="primeira",
+            created_by=self.user,
+        )
+        add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("1.500"),
+            application_date=date(2026, 4, 5),
+            note="segunda",
+            created_by=self.user,
+        )
+        first_history = line.histories.get(note="primeira")
+
+        response = self.client.post(
+            reverse("billing:line_history_edit", args=[first_history.id]),
+            {
+                "quantity_added": "2.000",
+                "application_date": "2026-04-06",
+                "note": "ajustada",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        line.refresh_from_db()
+        first_history.refresh_from_db()
+        self.assertEqual(line.qty_period, Decimal("3.500"))
+        self.assertEqual(first_history.quantity_added, Decimal("2.000"))
+        self.assertEqual(first_history.application_date, date(2026, 4, 6))
+        self.assertEqual(first_history.note, "ajustada")
+
+    def test_line_edit_keeps_history_sum_in_sync(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("3.000"),
+            application_date=date(2026, 4, 4),
+            note="primeira",
+            created_by=self.user,
+        )
+        add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("1.500"),
+            application_date=date(2026, 4, 5),
+            note="segunda",
+            created_by=self.user,
+        )
+
+        response = self.client.post(
+            reverse("billing:line_edit", args=[line.id]),
+            {
+                "item": str(self.item.id),
+                "location": str(self.location_ter.id),
+                "qty_period": "4.000",
+                "note": "ajuste total",
+                "excess_justification": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        line.refresh_from_db()
+        self.assertEqual(line.qty_period, Decimal("4.000"))
+        self.assertEqual(
+            sum(
+                line.histories.filter(is_generated_additional_entry=False).values_list("quantity_added", flat=True),
+                Decimal("0"),
+            ),
+            Decimal("4.000"),
+        )
+
+    def test_editing_history_entry_updates_generated_additional_totals(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            application_date=date(2026, 4, 8),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+        history = line.histories.get()
+
+        response = self.client.post(
+            reverse("billing:line_history_edit", args=[history.id]),
+            {
+                "quantity_added": "4.000",
+                "application_date": "2026-04-08",
+                "note": "reduzido no historico",
+                "uses_additional_materials": "on",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        line.refresh_from_db()
+        screw_line = MeasurementLine.objects.get(
+            period=self.period,
+            is_generated_additional=True,
+            item=self.screw_item,
+            location=self.location_ter,
+        )
+        self.assertEqual(line.qty_period, Decimal("4.000"))
+        self.assertEqual(line.additional_materials_base_qty, Decimal("4.000"))
+        self.assertEqual(screw_line.qty_period, Decimal("8.000"))
+
     def test_item_with_two_additional_materials_generates_contracted_lines(self):
         line, _ = add_or_merge_contracted_line(
             period=self.period,

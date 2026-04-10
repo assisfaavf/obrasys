@@ -12,11 +12,22 @@ from billing.forms import (
     ContractedLineAddForm,
     ContractedLineEditForm,
     ExtraLineForm,
+    MeasurementLineHistoryEditForm,
     MeasurementPeriodForm,
     SettlementForm,
 )
-from billing.models import MeasurementLine, MeasurementLineKind, MeasurementPeriod, WorkflowStatus
-from billing.services.measurement_lines import add_or_merge_contracted_line, update_contracted_line
+from billing.models import (
+    MeasurementLine,
+    MeasurementLineHistory,
+    MeasurementLineKind,
+    MeasurementPeriod,
+    WorkflowStatus,
+)
+from billing.services.measurement_lines import (
+    add_or_merge_contracted_line,
+    update_contracted_line,
+    update_history_entry,
+)
 from catalog.models import BudgetItemAdditionalMaterial
 from billing.services.measurement_calc import (
     compute_incc_factor,
@@ -508,6 +519,55 @@ def measurement_line_delete_view(request, line_id: int):
         {
             "line": line,
             "period": period,
+        },
+    )
+
+
+@staff_member_required
+def measurement_line_history_edit_view(request, history_id: int):
+    history = get_object_or_404(
+        MeasurementLineHistory.objects.select_related("line__period", "line__item"),
+        pk=history_id,
+    )
+    line = history.line
+    period = line.period
+
+    if period.workflow_status != WorkflowStatus.DRAFT:
+        messages.error(request, "Periodo nao esta em DRAFT.")
+        return redirect("billing:line_edit", line_id=line.id)
+
+    if history.is_generated_additional_entry or line.is_generated_additional:
+        messages.error(
+            request,
+            "Historicos gerados automaticamente sao recalculados pelas linhas de origem.",
+        )
+        return redirect("billing:line_edit", line_id=line.id)
+
+    if request.method == "POST":
+        form = MeasurementLineHistoryEditForm(request.POST, instance=history)
+        if form.is_valid():
+            update_history_entry(
+                history=history,
+                quantity_added=form.cleaned_data["quantity_added"],
+                application_date=form.cleaned_data["application_date"],
+                note=form.cleaned_data.get("note", ""),
+                uses_additional_materials=form.cleaned_data.get("uses_additional_materials", False),
+                created_by=request.user,
+            )
+            messages.success(request, "Lancamento historico atualizado.")
+            return redirect("billing:line_edit", line_id=line.id)
+    else:
+        form = MeasurementLineHistoryEditForm(instance=history)
+
+    return render(
+        request,
+        "billing/measurement_line_history_form.html",
+        {
+            "form": form,
+            "history": history,
+            "line": line,
+            "period": period,
+            "title": "Editar lancamento do historico",
         },
     )
 

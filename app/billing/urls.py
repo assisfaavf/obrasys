@@ -30,4 +30,9 @@ urlpatterns = [
     ),
     path("measurement-lines/<int:line_id>/edit/", views.measurement_line_edit_view, name="line_edit"),
     path("measurement-lines/<int:line_id>/delete/", views.measurement_line_delete_view, name="line_delete"),
+    path(
+        "measurement-line-histories/<int:history_id>/edit/",
+        views.measurement_line_history_edit_view,
+        name="line_history_edit",
+    ),
 ]

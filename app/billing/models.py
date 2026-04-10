@@ -278,6 +278,11 @@ class MeasurementLineHistory(models.Model):
     )
     source_item_snapshot = models.CharField(max_length=255, blank=True)
     is_generated_additional_entry = models.BooleanField(default=False)
+    additional_materials_quantity = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        default=Decimal("0"),
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -307,6 +312,15 @@ class MeasurementLineHistory(models.Model):
 
         if self.is_generated_additional_entry and not self.source_item_snapshot:
             raise ValidationError("Entradas geradas exigem source_item_snapshot.")
+
+        if self.additional_materials_quantity is None or self.additional_materials_quantity < 0:
+            raise ValidationError("additional_materials_quantity deve ser >= 0.")
+
+        if self.additional_materials_quantity > self.quantity_added:
+            raise ValidationError("additional_materials_quantity nao pode exceder quantity_added.")
+
+        if self.is_generated_additional_entry and self.additional_materials_quantity > 0:
+            raise ValidationError("Entradas geradas nao podem manter additional_materials_quantity.")
 
     def save(self, *args, **kwargs):
         self.full_clean()

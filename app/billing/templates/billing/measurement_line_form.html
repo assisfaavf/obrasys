@@ -113,6 +113,7 @@
           <th>Origem</th>
           <th>Usuario</th>
           <th>Registrado em</th>
+          <th>Acoes</th>
         </tr>
       </thead>
       <tbody>
@@ -130,10 +131,17 @@
               {% endif %}
             </td>
             <td>{{ history.created_at|date:"d/m/Y H:i" }}</td>
+            <td>
+              {% if not history.is_generated_additional_entry and not line.is_generated_additional %}
+                <a href="{% url 'billing:line_history_edit' history.id %}">Editar</a>
+              {% else %}
+                -
+              {% endif %}
+            </td>
           </tr>
         {% empty %}
           <tr>
-            <td colspan="6">Sem historico de adicoes.</td>
+            <td colspan="7">Sem historico de adicoes.</td>
           </tr>
         {% endfor %}
       </tbody>
