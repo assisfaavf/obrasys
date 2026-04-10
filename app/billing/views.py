@@ -10,13 +10,14 @@ from django.utils import timezone
 
 from billing.forms import (
     ContractedLineAddForm,
+    ContractedLineEditForm,
     ExtraLineForm,
-    MeasurementLineForm,
     MeasurementPeriodForm,
     SettlementForm,
 )
 from billing.models import MeasurementLine, MeasurementLineKind, MeasurementPeriod, WorkflowStatus
-from billing.services.measurement_lines import add_or_merge_contracted_line
+from billing.services.measurement_lines import add_or_merge_contracted_line, update_contracted_line
+from catalog.models import BudgetItemAdditionalMaterial
 from billing.services.measurement_calc import (
     compute_incc_factor,
     compute_period_totals,
@@ -44,6 +45,32 @@ def _compute_indexed_preview(
     if apply_to == AdjustmentApplyTo.LABOR:
         return total_material + (total_labor * factor)
     return (total_material + total_labor) * factor
+
+
+def _build_additional_materials_map(items) -> dict[str, list[dict[str, str]]]:
+    item_ids = [item.id for item in items]
+    if not item_ids:
+        return {}
+
+    relations = (
+        BudgetItemAdditionalMaterial.objects.select_related("additional_item", "additional_item__unit")
+        .filter(
+            parent_item_id__in=item_ids,
+            is_active=True,
+            additional_item__is_active=True,
+        )
+        .order_by("parent_item_id", "additional_item__eap_code", "id")
+    )
+
+    summary_map: dict[str, list[dict[str, str]]] = {}
+    for relation in relations:
+        summary_map.setdefault(str(relation.parent_item_id), []).append(
+            {
+                "label": f"{relation.additional_item.eap_code} - {relation.additional_item.description}",
+                "quantity_per_unit": str(relation.quantity_per_unit),
+            }
+        )
+    return summary_map
 
 
 @staff_member_required
@@ -189,6 +216,9 @@ def measurement_detail_view(request, measurement_id: int):
                         application_date=contracted_form.cleaned_data.get("application_date"),
                         note=contracted_form.cleaned_data.get("note", ""),
                         excess_justification=contracted_form.cleaned_data.get("excess_justification", ""),
+                        use_additional_materials=contracted_form.cleaned_data.get(
+                            "use_additional_materials", False
+                        ),
                         created_by=request.user,
                     )
                 except ValidationError as exc:
@@ -250,7 +280,13 @@ def measurement_detail_view(request, measurement_id: int):
             return redirect("billing:measurement_detail", measurement_id=period.id)
 
     lines = list(
-        period.lines.select_related("item", "location", "extra_unit").order_by("id")
+        period.lines.select_related(
+            "item",
+            "location",
+            "extra_unit",
+            "generated_from_line",
+            "generated_from_line__item",
+        ).order_by("id")
     )
     contracted_lines = [line for line in lines if line.line_kind == MeasurementLineKind.CONTRACTED]
     extra_lines = [line for line in lines if line.line_kind == MeasurementLineKind.EXTRA]
@@ -323,6 +359,10 @@ def measurement_detail_view(request, measurement_id: int):
         saldo_antes = (item.qty_contracted or Decimal("0")) - previous - consumed_in_period
         contracted_item_balances[str(item.id)] = str(max(saldo_antes, Decimal("0")))
 
+    contracted_item_additional_materials = _build_additional_materials_map(
+        contracted_form.fields["item"].queryset
+    )
+
     settlements = period.settlements.order_by("event_date", "id")
 
     total_material, total_labor, total_total = compute_period_totals(period.id)
@@ -362,6 +402,7 @@ def measurement_detail_view(request, measurement_id: int):
             "settlement_form": settlement_form,
             "contracted_line_stats": contracted_line_stats,
             "contracted_item_balances": contracted_item_balances,
+            "contracted_item_additional_materials": contracted_item_additional_materials,
             "extra_lines": extra_lines,
             "settlements": settlements,
             "total_material": total_material,
@@ -377,24 +418,46 @@ def measurement_detail_view(request, measurement_id: int):
 
 @staff_member_required
 def measurement_line_edit_view(request, line_id: int):
-    line = get_object_or_404(MeasurementLine.objects.select_related("period"), pk=line_id)
+    line = get_object_or_404(
+        MeasurementLine.objects.select_related("period", "item", "generated_from_line"),
+        pk=line_id,
+    )
     period = line.period
 
     if period.workflow_status != WorkflowStatus.DRAFT:
         messages.error(request, "Periodo nao esta em DRAFT.")
         return redirect("billing:measurement_detail", measurement_id=period.id)
 
+    if line.is_generated_additional:
+        messages.error(
+            request,
+            "Linhas geradas por material adicional sao atualizadas pela linha principal.",
+        )
+        return redirect("billing:measurement_detail", measurement_id=period.id)
+
     if line.line_kind == MeasurementLineKind.EXTRA:
         form_class = ExtraLineForm
         title = "Editar linha extra"
     else:
-        form_class = MeasurementLineForm
+        form_class = ContractedLineEditForm
         title = "Editar linha contratada"
 
     if request.method == "POST":
         form = form_class(request.POST, instance=line, period=period)
         if form.is_valid():
-            form.save()
+            if line.line_kind == MeasurementLineKind.EXTRA:
+                form.save()
+            else:
+                update_contracted_line(
+                    line=line,
+                    item=form.cleaned_data["item"],
+                    location=form.cleaned_data.get("location"),
+                    qty_period=form.cleaned_data["qty_period"],
+                    note=form.cleaned_data.get("note", ""),
+                    excess_justification=form.cleaned_data.get("excess_justification", ""),
+                    use_additional_materials=form.cleaned_data.get("use_additional_materials", False),
+                    created_by=request.user,
+                )
             messages.success(request, "Linha atualizada.")
             return redirect("billing:measurement_detail", measurement_id=period.id)
     else:
@@ -405,6 +468,9 @@ def measurement_line_edit_view(request, line_id: int):
         "-created_at",
         "-id",
     )
+    item_additional_materials = {}
+    if line.line_kind == MeasurementLineKind.CONTRACTED:
+        item_additional_materials = _build_additional_materials_map(form.fields["item"].queryset)
 
     return render(
         request,
@@ -412,6 +478,7 @@ def measurement_line_edit_view(request, line_id: int):
         {
             "form": form,
             "histories": histories,
+            "item_additional_materials": item_additional_materials,
             "period": period,
             "line": line,
             "title": title,
@@ -421,8 +488,18 @@ def measurement_line_edit_view(request, line_id: int):
 
 @staff_member_required
 def measurement_line_delete_view(request, line_id: int):
-    line = get_object_or_404(MeasurementLine.objects.select_related("period"), pk=line_id)
+    line = get_object_or_404(
+        MeasurementLine.objects.select_related("period", "generated_from_line"),
+        pk=line_id,
+    )
     period = line.period
+
+    if line.is_generated_additional:
+        messages.error(
+            request,
+            "Linhas geradas por material adicional sao removidas a partir da linha principal.",
+        )
+        return redirect("billing:measurement_detail", measurement_id=period.id)
 
     if request.method == "POST":
         try:

@@ -126,6 +126,7 @@ class ContractedLineAddForm(forms.ModelForm):
         widget=forms.DateInput(attrs={"type": "date"}),
     )
     use_today = forms.BooleanField(required=False, label="Hoje")
+    use_additional_materials = forms.BooleanField(required=False, label="Usar materiais adicionais")
 
     class Meta:
         model = MeasurementLine
@@ -183,6 +184,17 @@ class ContractedLineAddForm(forms.ModelForm):
             self.add_error("excess_justification", "Justificativa do excedente e obrigatoria.")
 
         return cleaned_data
+
+
+class ContractedLineEditForm(MeasurementLineForm):
+    use_additional_materials = forms.BooleanField(required=False, label="Usar materiais adicionais")
+
+    def __init__(self, *args, period: MeasurementPeriod, **kwargs):
+        super().__init__(*args, period=period, **kwargs)
+        if not self.is_bound:
+            self.initial["use_additional_materials"] = (
+                (self.instance.additional_materials_base_qty or Decimal("0")) > Decimal("0")
+            )
 
 
 class ExtraLineForm(forms.ModelForm):

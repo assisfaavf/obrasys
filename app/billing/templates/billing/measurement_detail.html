@@ -110,7 +110,13 @@
         {% for row in contracted_line_stats %}
           <tr>
             <td>{{ row.line.item.eap_code }}</td>
-            <td>{{ row.line.item.description }}</td>
+            <td>
+              {{ row.line.item.description }}
+              {% if row.line.is_generated_additional %}
+                <br>
+                <span class="muted">Gerado por material adicional de {{ row.line.generated_from_line.item.eap_code }}</span>
+              {% endif %}
+            </td>
             <td>{{ row.line.location.code|default:"-" }}</td>
             <td>{{ row.effective_qty|br_decimal:2 }}</td>
             <td>{{ row.previous|br_decimal:2 }}</td>
@@ -119,7 +125,7 @@
             <td>{{ row.percent|br_decimal:2 }}%</td>
             <td>{{ row.period_value|br_money }}</td>
             <td>
-              {% if is_draft %}
+              {% if is_draft and not row.line.is_generated_additional %}
                 <a href="{% url 'billing:line_edit' row.line.id %}">Editar</a>
                 <a href="{% url 'billing:line_delete' row.line.id %}">Excluir</a>
               {% else %}
@@ -173,6 +179,18 @@
           </label>
           {{ contracted_form.use_today.errors }}
         </p>
+        <div id="contracted-additional-materials-block" style="display:none;">
+          <p>
+            <label for="{{ contracted_form.use_additional_materials.id_for_label }}">
+              {{ contracted_form.use_additional_materials }} {{ contracted_form.use_additional_materials.label }}
+            </label>
+            {{ contracted_form.use_additional_materials.errors }}
+          </p>
+          <div id="contracted-additional-materials-summary" class="muted" style="display:none;">
+            <strong>Este item possui materiais adicionais:</strong>
+            <ul id="contracted-additional-materials-list"></ul>
+          </div>
+        </div>
         <div id="contracted-excess-inline" style="display:none;">
           <p class="errors" id="contracted-excess-msg"></p>
           <p>
@@ -189,19 +207,27 @@
         <button type="submit">Adicionar</button>
       </form>
       {{ contracted_item_balances|json_script:"contracted-item-balances" }}
+      {{ contracted_item_additional_materials|json_script:"contracted-item-additional-materials" }}
       <script>
         (function () {
           const dataEl = document.getElementById("contracted-item-balances");
-          if (!dataEl) return;
+          const additionalDataEl = document.getElementById("contracted-item-additional-materials");
+          if (!dataEl || !additionalDataEl) return;
           const balances = JSON.parse(dataEl.textContent || "{}");
+          const additionalMaterials = JSON.parse(additionalDataEl.textContent || "{}");
           const itemEl = document.getElementById("{{ contracted_form.item.id_for_label }}");
           const qtyEl = document.getElementById("{{ contracted_form.qty_period.id_for_label }}");
           const applicationDateEl = document.getElementById("{{ contracted_form.application_date.id_for_label }}");
           const useTodayEl = document.getElementById("{{ contracted_form.use_today.id_for_label }}");
+          const useAdditionalEl = document.getElementById("{{ contracted_form.use_additional_materials.id_for_label }}");
+          const additionalBlockEl = document.getElementById("contracted-additional-materials-block");
+          const additionalSummaryEl = document.getElementById("contracted-additional-materials-summary");
+          const additionalListEl = document.getElementById("contracted-additional-materials-list");
           const inlineEl = document.getElementById("contracted-excess-inline");
           const msgEl = document.getElementById("contracted-excess-msg");
           const justificationEl = document.getElementById("{{ contracted_form.excess_justification.id_for_label }}");
           const todayIso = "{{ today_iso }}";
+          let useAdditionalDirty = {{ contracted_form.is_bound|yesno:"true,false" }};
 
           function parseDecimal(value) {
             if (value === null || value === undefined || value === "") return 0;
@@ -212,10 +238,11 @@
             return Number(normalized) || 0;
           }
 
-          function formatDecimalBr(value) {
+          function formatDecimalBr(value, places) {
+            const fractionDigits = places === undefined ? 2 : places;
             return Number(value).toLocaleString("pt-BR", {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2
+              minimumFractionDigits: fractionDigits,
+              maximumFractionDigits: fractionDigits
             });
           }
 
@@ -246,11 +273,45 @@
             }
           }
 
-          if (itemEl) itemEl.addEventListener("change", updateInlineExcess);
+          function updateAdditionalMaterials() {
+            if (!itemEl || !useAdditionalEl || !additionalBlockEl || !additionalSummaryEl || !additionalListEl) return;
+            const selectedItemId = itemEl.value || "";
+            const materials = additionalMaterials[selectedItemId] || [];
+
+            if (!materials.length) {
+              additionalBlockEl.style.display = "none";
+              additionalSummaryEl.style.display = "none";
+              additionalListEl.innerHTML = "";
+              useAdditionalEl.checked = false;
+              return;
+            }
+
+            additionalBlockEl.style.display = "block";
+            additionalSummaryEl.style.display = "block";
+            additionalListEl.innerHTML = materials.map(function (material) {
+              return "<li>" + material.label + " (" + formatDecimalBr(material.quantity_per_unit, 4) + " por un)</li>";
+            }).join("");
+
+            if (!useAdditionalDirty && !useAdditionalEl.checked) {
+              useAdditionalEl.checked = true;
+            }
+          }
+
+          if (itemEl) itemEl.addEventListener("change", function () {
+            useAdditionalDirty = false;
+            updateInlineExcess();
+            updateAdditionalMaterials();
+          });
           if (qtyEl) qtyEl.addEventListener("input", updateInlineExcess);
           if (useTodayEl) useTodayEl.addEventListener("change", syncTodayOption);
+          if (useAdditionalEl) {
+            useAdditionalEl.addEventListener("change", function () {
+              useAdditionalDirty = true;
+            });
+          }
           updateInlineExcess();
           syncTodayOption();
+          updateAdditionalMaterials();
         })();
       </script>
     {% endif %}

@@ -1,8 +1,9 @@
 ﻿from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 
-from catalog.models import BudgetImportMode, BudgetItem, Unit
+from catalog.models import BudgetImportMode, BudgetItem, BudgetItemAdditionalMaterial, Unit
 from catalog.services.budget_import import apply_import_job, create_preview_job, parse_decimal
 from core.models import Client, Project
 
@@ -121,3 +122,28 @@ class BudgetItemDisplayTests(TestCase):
         )
 
         self.assertEqual(str(item), "1.3.2 — Quadro de distribuicao - pavimento tipo [un]")
+
+
+class BudgetItemAdditionalMaterialTests(TestCase):
+    def test_blocks_parent_item_equal_to_additional_item(self):
+        client = Client.objects.create(name="Cliente Adicional")
+        project = Project.objects.create(name="Projeto Adicional", client=client)
+        unit = Unit.objects.create(code="un", name="Unidade")
+        item = BudgetItem.objects.create(
+            project=project,
+            eap_code="2.1",
+            description="Caixa octogonal",
+            unit=unit,
+            qty_contracted=Decimal("10"),
+            pu_material=Decimal("2"),
+            pu_labor=Decimal("1"),
+        )
+
+        relation = BudgetItemAdditionalMaterial(
+            parent_item=item,
+            additional_item=item,
+            quantity_per_unit=Decimal("2.0000"),
+        )
+
+        with self.assertRaises(ValidationError):
+            relation.full_clean()

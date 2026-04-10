@@ -8,8 +8,22 @@ from django.urls import path, reverse
 from django.utils.html import format_html
 
 from catalog.forms import BudgetImportUploadForm
-from catalog.models import BudgetImportJob, BudgetImportJobStatus, BudgetItem, Unit
+from catalog.models import (
+    BudgetImportJob,
+    BudgetImportJobStatus,
+    BudgetItem,
+    BudgetItemAdditionalMaterial,
+    Unit,
+)
 from catalog.services.budget_import import apply_import_job, create_preview_job
+
+
+class BudgetItemAdditionalMaterialInline(admin.TabularInline):
+    model = BudgetItemAdditionalMaterial
+    fk_name = "parent_item"
+    extra = 1
+    fields = ("additional_item", "quantity_per_unit", "note", "is_active")
+    autocomplete_fields = ("additional_item",)
 
 
 @admin.register(Unit)
@@ -24,6 +38,7 @@ class BudgetItemAdmin(admin.ModelAdmin):
     list_filter = ("project", "is_active", "unit")
     search_fields = ("project__name", "eap_code", "description")
     ordering = ("project", "eap_code")
+    inlines = (BudgetItemAdditionalMaterialInline,)
 
 
 @admin.register(BudgetImportJob)

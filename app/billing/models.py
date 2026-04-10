@@ -145,6 +145,13 @@ class MeasurementLine(models.Model):
         blank=True,
         related_name="measurement_lines",
     )
+    generated_from_line = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="generated_lines",
+    )
     extra_description = models.CharField(max_length=255, blank=True)
     extra_unit = models.ForeignKey(
         "catalog.Unit",
@@ -160,6 +167,13 @@ class MeasurementLine(models.Model):
     excess_justification = models.TextField(blank=True)
     justification = models.TextField(blank=True)
     note = models.CharField(max_length=255, blank=True)
+    is_generated_additional = models.BooleanField(default=False)
+    use_additional_materials = models.BooleanField(default=False)
+    additional_materials_base_qty = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        default=Decimal("0"),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -187,6 +201,12 @@ class MeasurementLine(models.Model):
         if self.qty_period is not None and self.qty_period < 0:
             raise ValidationError("qty_period deve ser >= 0.")
 
+        if self.additional_materials_base_qty is not None and self.additional_materials_base_qty < 0:
+            raise ValidationError("additional_materials_base_qty deve ser >= 0.")
+
+        if self.generated_from_line_id and self.generated_from_line_id == self.pk:
+            raise ValidationError("generated_from_line nao pode apontar para a propria linha.")
+
         if self.line_kind == MeasurementLineKind.CONTRACTED and not self.item_id:
             raise ValidationError("Linhas CONTRACTED exigem item.")
         if (
@@ -202,6 +222,21 @@ class MeasurementLine(models.Model):
                 raise ValidationError("Linhas EXTRA exigem descricao.")
             if not self.extra_unit_id:
                 raise ValidationError("Linhas EXTRA exigem unidade.")
+
+        if self.is_generated_additional:
+            if not self.generated_from_line_id:
+                raise ValidationError("Linhas geradas exigem generated_from_line.")
+            if self.line_kind != MeasurementLineKind.CONTRACTED:
+                raise ValidationError("Linhas geradas devem ser CONTRACTED.")
+            if self.additional_materials_base_qty != Decimal("0"):
+                raise ValidationError("Linhas geradas nao podem manter additional_materials_base_qty.")
+            if self.use_additional_materials:
+                raise ValidationError("Linhas geradas nao usam use_additional_materials.")
+        elif self.generated_from_line_id:
+            raise ValidationError("Somente linhas geradas podem ter generated_from_line.")
+
+        if not self.is_generated_additional and self.additional_materials_base_qty > (self.qty_period or Decimal("0")):
+            raise ValidationError("additional_materials_base_qty nao pode exceder qty_period.")
 
     def save(self, *args, **kwargs):
         self.full_clean()

@@ -11,7 +11,7 @@ from django.utils import timezone
 from billing.forms import ContractedLineAddForm
 from billing.models import MeasurementLine, MeasurementLineHistory, MeasurementPeriod
 from billing.services.measurement_lines import add_or_merge_contracted_line
-from catalog.models import BudgetItem, Unit
+from catalog.models import BudgetItem, BudgetItemAdditionalMaterial, Unit
 from core.models import Client, Project
 
 
@@ -35,6 +35,36 @@ class ContractedLineMergeTests(TestCase):
             qty_contracted=Decimal("30"),
             pu_material=Decimal("10"),
             pu_labor=Decimal("5"),
+        )
+        self.screw_item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="6.6.2",
+            description="Parafuso",
+            unit=self.unit,
+            qty_contracted=Decimal("200"),
+            pu_material=Decimal("1"),
+            pu_labor=Decimal("0"),
+        )
+        self.anchor_item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="6.6.3",
+            description="Bucha",
+            unit=self.unit,
+            qty_contracted=Decimal("200"),
+            pu_material=Decimal("1"),
+            pu_labor=Decimal("0"),
+        )
+        BudgetItemAdditionalMaterial.objects.create(
+            parent_item=self.item,
+            additional_item=self.screw_item,
+            quantity_per_unit=Decimal("2.0000"),
+            note="2 parafusos por unidade",
+        )
+        BudgetItemAdditionalMaterial.objects.create(
+            parent_item=self.item,
+            additional_item=self.anchor_item,
+            quantity_per_unit=Decimal("2.0000"),
+            note="2 buchas por unidade",
         )
         self.location_ter = self.project.locations.create(code="TER", name="Terreo", order_index=1)
         self.location_cob = self.project.locations.create(code="COB", name="Cobertura", order_index=2)
@@ -319,3 +349,168 @@ class ContractedLineMergeTests(TestCase):
             [history.note for history in histories[:4]],
             ["data mais nova", "mais recente no mesmo dia", "mais antigo", "base"],
         )
+
+    def test_item_with_two_additional_materials_generates_contracted_lines(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            application_date=date(2026, 4, 8),
+            note="principal",
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+
+        generated_lines = list(
+            MeasurementLine.objects.filter(generated_from_line=line).order_by("item__eap_code")
+        )
+
+        self.assertEqual(line.additional_materials_base_qty, Decimal("10.000"))
+        self.assertEqual(len(generated_lines), 2)
+        self.assertEqual([generated.item_id for generated in generated_lines], [self.screw_item.id, self.anchor_item.id])
+        self.assertTrue(all(generated.is_generated_additional for generated in generated_lines))
+        self.assertTrue(all(generated.location_id == self.location_ter.id for generated in generated_lines))
+        self.assertEqual(generated_lines[0].qty_period, Decimal("20.000"))
+        self.assertEqual(generated_lines[1].qty_period, Decimal("20.000"))
+        self.assertEqual(generated_lines[0].histories.get().application_date, date(2026, 4, 8))
+
+    def test_unchecked_checkbox_does_not_generate_additional_lines(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            use_additional_materials=False,
+            created_by=self.user,
+        )
+
+        self.assertEqual(line.additional_materials_base_qty, Decimal("0.000"))
+        self.assertFalse(
+            MeasurementLine.objects.filter(generated_from_line=line, is_generated_additional=True).exists()
+        )
+
+    def test_merge_without_additional_materials_does_not_increase_generated_quantities(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+
+        line, merged = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("5.000"),
+            use_additional_materials=False,
+            created_by=self.user,
+        )
+
+        generated_lines = list(MeasurementLine.objects.filter(generated_from_line=line).order_by("item__eap_code"))
+        self.assertTrue(merged)
+        self.assertEqual(line.qty_period, Decimal("15.000"))
+        self.assertEqual(line.additional_materials_base_qty, Decimal("10.000"))
+        self.assertEqual([generated.qty_period for generated in generated_lines], [Decimal("20.000"), Decimal("20.000")])
+
+    def test_edit_quantity_updates_generated_additional_lines(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+
+        response = self.client.post(
+            reverse("billing:line_edit", args=[line.id]),
+            {
+                "item": str(self.item.id),
+                "location": str(self.location_ter.id),
+                "qty_period": "12.000",
+                "note": "ajustado",
+                "excess_justification": "",
+                "use_additional_materials": "on",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        line.refresh_from_db()
+        generated_lines = list(MeasurementLine.objects.filter(generated_from_line=line).order_by("item__eap_code"))
+        self.assertEqual(line.additional_materials_base_qty, Decimal("12.000"))
+        self.assertEqual([generated.qty_period for generated in generated_lines], [Decimal("24.000"), Decimal("24.000")])
+
+    def test_unchecking_additional_materials_on_edit_removes_generated_lines(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+
+        response = self.client.post(
+            reverse("billing:line_edit", args=[line.id]),
+            {
+                "item": str(self.item.id),
+                "location": str(self.location_ter.id),
+                "qty_period": "10.000",
+                "note": "sem adicionais",
+                "excess_justification": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        line.refresh_from_db()
+        self.assertEqual(line.additional_materials_base_qty, Decimal("0.000"))
+        self.assertFalse(MeasurementLine.objects.filter(generated_from_line=line).exists())
+
+    def test_deleting_parent_line_removes_generated_additional_lines(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+        generated_ids = list(MeasurementLine.objects.filter(generated_from_line=line).values_list("id", flat=True))
+
+        response = self.client.post(reverse("billing:line_delete", args=[line.id]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(MeasurementLine.objects.filter(pk=line.id).exists())
+        self.assertFalse(MeasurementLine.objects.filter(pk__in=generated_ids).exists())
+
+    def test_editing_same_parent_twice_does_not_duplicate_generated_lines(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+
+        for qty in ("11.000", "12.000"):
+            response = self.client.post(
+                reverse("billing:line_edit", args=[line.id]),
+                {
+                    "item": str(self.item.id),
+                    "location": str(self.location_ter.id),
+                    "qty_period": qty,
+                    "note": "ajuste",
+                    "excess_justification": "",
+                    "use_additional_materials": "on",
+                },
+            )
+            self.assertEqual(response.status_code, 302)
+
+        line.refresh_from_db()
+        generated_lines = list(MeasurementLine.objects.filter(generated_from_line=line).order_by("item__eap_code"))
+        self.assertEqual(len(generated_lines), 2)
+        self.assertEqual([generated.qty_period for generated in generated_lines], [Decimal("24.000"), Decimal("24.000")])

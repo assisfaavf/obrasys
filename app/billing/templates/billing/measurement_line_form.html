@@ -8,9 +8,95 @@
   <p class="muted">Medicao {{ period.number }} - {{ period.project.name }}</p>
   <form method="post">
     {% csrf_token %}
-    {{ form.as_p }}
+    {% if line.line_kind == "CONTRACTED" %}
+      <p>
+        {{ form.item.label_tag }}
+        {{ form.item }}
+        {{ form.item.errors }}
+      </p>
+      <p>
+        {{ form.location.label_tag }}
+        {{ form.location }}
+        {{ form.location.errors }}
+      </p>
+      <p>
+        {{ form.qty_period.label_tag }}
+        {{ form.qty_period }}
+        {{ form.qty_period.errors }}
+      </p>
+      <div id="edit-additional-materials-block" style="display:none;">
+        <p>
+          <label for="{{ form.use_additional_materials.id_for_label }}">
+            {{ form.use_additional_materials }} {{ form.use_additional_materials.label }}
+          </label>
+          {{ form.use_additional_materials.errors }}
+        </p>
+        <div id="edit-additional-materials-summary" class="muted" style="display:none;">
+          <strong>Este item possui materiais adicionais:</strong>
+          <ul id="edit-additional-materials-list"></ul>
+        </div>
+      </div>
+      <p>
+        {{ form.excess_justification.label_tag }}
+        {{ form.excess_justification }}
+        {{ form.excess_justification.errors }}
+      </p>
+      <p>
+        {{ form.note.label_tag }}
+        {{ form.note }}
+        {{ form.note.errors }}
+      </p>
+    {% else %}
+      {{ form.as_p }}
+    {% endif %}
     <button type="submit">Salvar</button>
   </form>
+
+  {% if line.line_kind == "CONTRACTED" %}
+    {{ item_additional_materials|json_script:"edit-item-additional-materials" }}
+    <script>
+      (function () {
+        const dataEl = document.getElementById("edit-item-additional-materials");
+        if (!dataEl) return;
+        const additionalMaterials = JSON.parse(dataEl.textContent || "{}");
+        const itemEl = document.getElementById("{{ form.item.id_for_label }}");
+        const useAdditionalEl = document.getElementById("{{ form.use_additional_materials.id_for_label }}");
+        const additionalBlockEl = document.getElementById("edit-additional-materials-block");
+        const additionalSummaryEl = document.getElementById("edit-additional-materials-summary");
+        const additionalListEl = document.getElementById("edit-additional-materials-list");
+
+        function formatDecimalBr(value, places) {
+          return Number(value).toLocaleString("pt-BR", {
+            minimumFractionDigits: places,
+            maximumFractionDigits: places
+          });
+        }
+
+        function updateAdditionalMaterials() {
+          if (!itemEl || !useAdditionalEl || !additionalBlockEl || !additionalSummaryEl || !additionalListEl) return;
+          const selectedItemId = itemEl.value || "";
+          const materials = additionalMaterials[selectedItemId] || [];
+
+          if (!materials.length) {
+            additionalBlockEl.style.display = "none";
+            additionalSummaryEl.style.display = "none";
+            additionalListEl.innerHTML = "";
+            useAdditionalEl.checked = false;
+            return;
+          }
+
+          additionalBlockEl.style.display = "block";
+          additionalSummaryEl.style.display = "block";
+          additionalListEl.innerHTML = materials.map(function (material) {
+            return "<li>" + material.label + " (" + formatDecimalBr(material.quantity_per_unit, 4) + " por un)</li>";
+          }).join("");
+        }
+
+        if (itemEl) itemEl.addEventListener("change", updateAdditionalMaterials);
+        updateAdditionalMaterials();
+      })();
+    </script>
+  {% endif %}
 
   <div class="card">
     <h2>Historico de adicoes</h2>

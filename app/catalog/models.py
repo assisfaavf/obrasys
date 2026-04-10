@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -30,6 +31,53 @@ class BudgetItem(models.Model):
 
     def __str__(self) -> str:
         return f"{self.eap_code} — {self.description} [{self.unit.code}]"
+
+
+class BudgetItemAdditionalMaterial(models.Model):
+    parent_item = models.ForeignKey(
+        "catalog.BudgetItem",
+        on_delete=models.CASCADE,
+        related_name="additional_materials",
+    )
+    additional_item = models.ForeignKey(
+        "catalog.BudgetItem",
+        on_delete=models.CASCADE,
+        related_name="used_as_additional_material_in",
+    )
+    quantity_per_unit = models.DecimalField(max_digits=14, decimal_places=4)
+    note = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["parent_item", "additional_item"],
+                name="uniq_budget_additional_material",
+            ),
+        ]
+        ordering = ["parent_item_id", "additional_item__eap_code", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.parent_item} -> {self.additional_item}"
+
+    def clean(self):
+        super().clean()
+
+        if not self.parent_item_id or not self.additional_item_id:
+            return
+
+        if self.parent_item_id == self.additional_item_id:
+            raise ValidationError("parent_item e additional_item nao podem ser o mesmo item.")
+
+        if self.quantity_per_unit is None or self.quantity_per_unit <= 0:
+            raise ValidationError("quantity_per_unit deve ser > 0.")
+
+        if self.parent_item.project_id != self.additional_item.project_id:
+            raise ValidationError("Os materiais adicionais devem pertencer ao mesmo projeto.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class BudgetImportMode(models.TextChoices):
