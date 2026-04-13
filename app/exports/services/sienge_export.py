@@ -411,17 +411,27 @@ def _write_measured_contract_progress_rows(
     columns: dict[str, int],
     row_by_eap: dict[str, int],
     contracted_progress: dict[str, dict],
+    capacity_end: int,
 ):
     filled_count = 0
     missing_eap: list[str] = []
     cells_written: list[str] = []
 
-    for eap_code, progress in contracted_progress.items():
+    ordered_progress = sorted(
+        contracted_progress.items(),
+        key=lambda item: (row_by_eap.get(item[0], 10**9), item[0]),
+    )
+
+    for eap_code, progress in ordered_progress:
         if progress["quantity"] <= 0:
             continue
 
-        row = row_by_eap.get(eap_code)
-        if row is None:
+        if eap_code not in row_by_eap:
+            missing_eap.append(eap_code)
+            continue
+
+        row = DATA_START_ROW + filled_count
+        if row > capacity_end:
             missing_eap.append(eap_code)
             continue
 
@@ -464,51 +474,18 @@ def update_sienge_sheet_for_period(workbook, project, period):
             row_by_eap[str(eap_code).strip()] = row
 
     contracted_progress, extra_entries, excess_entries = _build_contract_progress(period)
-    items_by_eap = {
-        item.eap_code: item
-        for item in BudgetItem.objects.select_related("unit").filter(project=project, is_active=True)
-    }
 
     _clear_measurement_sheet(target_sheet, capacity_end)
     target_sheet["H3"] = period.number
     target_sheet["I3"] = _format_period_label(period)
     columns = _measurement_columns(target_sheet)
 
-    for eap_code, row in row_by_eap.items():
-        item_code = contract_sheet.cell(row=row, column=2).value
-        description = contract_sheet.cell(row=row, column=3).value
-        quantity_contracted = _q_qty(contract_sheet.cell(row=row, column=5).value or Decimal("0"))
-        pu_material = _q_money(contract_sheet.cell(row=row, column=6).value or Decimal("0"))
-        pu_labor = _q_money(contract_sheet.cell(row=row, column=7).value or Decimal("0"))
-
-        progress = contracted_progress.get(eap_code)
-        item = items_by_eap.get(eap_code)
-        executed_qty = progress["quantity"] if progress else Decimal("0")
-        if progress is not None:
-            cumulative_qty = progress["cumulative"]
-        elif item is not None:
-            cumulative_qty = _q_qty(get_item_cumulative(project, item.id, period.number - 1))
-        else:
-            cumulative_qty = Decimal("0")
-        _write_measurement_row(
-            target_sheet=target_sheet,
-            columns=columns,
-            row=row,
-            stage_value=contract_sheet.cell(row=row, column=1).value,
-            item_code=item_code,
-            description=description,
-            quantity_contracted=quantity_contracted,
-            pu_material=pu_material,
-            pu_labor=pu_labor,
-            cumulative_qty=cumulative_qty,
-            executed_qty=executed_qty,
-        )
-
     items_filled_count, missing_eap, cells_written = _write_measured_contract_progress_rows(
         target_sheet,
         columns,
         row_by_eap,
         contracted_progress,
+        capacity_end,
     )
 
     summary = {
