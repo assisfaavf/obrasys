@@ -367,6 +367,53 @@ class XlsxBoletimServiceTests(TestCase):
         self.assertEqual(grouped["ELETRICA TESTE"]["contracted"][0][0], "2.1")
         self.assertEqual(grouped["HIDROSSANITARIA"]["contracted"][0][0], "3.1")
 
+    def test_group_measurement_data_orders_disciplines_by_numeric_code(self):
+        discipline_10 = Discipline.objects.create(name="Disciplina dez", code="10")
+        discipline_2 = Discipline.objects.create(name="Disciplina dois", code="2")
+        discipline_1 = Discipline.objects.create(name="Disciplina um", code="1")
+        discipline_3 = Discipline.objects.create(name="Disciplina tres", code="3")
+        period = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=7,
+            ref_month=date(2026, 8, 1),
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 31),
+        )
+
+        for index, discipline in enumerate(
+            [discipline_10, discipline_2, discipline_1, discipline_3, None],
+            start=1,
+        ):
+            item = BudgetItem.objects.create(
+                project=self.project,
+                eap_code=f"7.{index}",
+                description=f"Item {index}",
+                unit=self.unit,
+                qty_contracted=Decimal("100"),
+                pu_material=Decimal("10"),
+                pu_labor=Decimal("5"),
+                discipline=discipline,
+            )
+            MeasurementLine.objects.create(
+                period=period,
+                line_kind=MeasurementLineKind.CONTRACTED,
+                item=item,
+                qty_period=Decimal("1"),
+            )
+
+        grouped = group_measurement_data_by_discipline(period)
+
+        self.assertEqual(
+            list(grouped.keys()),
+            [
+                "Disciplina um",
+                "Disciplina dois",
+                "Disciplina tres",
+                "Disciplina dez",
+                DEFAULT_DISCIPLINE,
+            ],
+        )
+
     def test_group_measurement_data_uses_sem_disciplina_fallback(self):
         item = BudgetItem.objects.create(
             project=self.project,

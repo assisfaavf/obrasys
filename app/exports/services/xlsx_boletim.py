@@ -158,7 +158,7 @@ def _build_render_context(period: MeasurementPeriod) -> dict:
     }
 
 
-def _resolve_discipline(line) -> str | None:
+def _resolve_discipline(line):
     candidates = [
         getattr(line, "discipline", None),
         getattr(line, "discipline_name", None),
@@ -182,23 +182,42 @@ def _resolve_discipline(line) -> str | None:
             if text:
                 return text
             continue
-        for attr in ("name", "code", "title"):
-            nested = getattr(candidate, attr, None)
-            if nested:
-                return str(nested)
-        return str(candidate)
+        return candidate
     return None
 
 
-def _discipline_name(value: str | None) -> str:
-    text = (value or "").strip()
+def _discipline_name(value) -> str:
+    if value is None:
+        return DEFAULT_DISCIPLINE
+    if isinstance(value, str):
+        text = value.strip()
+        return text or DEFAULT_DISCIPLINE
+    for attr in ("name", "code", "title"):
+        nested = getattr(value, attr, None)
+        if nested:
+            text = str(nested).strip()
+            if text:
+                return text
+    text = str(value).strip()
     return text or DEFAULT_DISCIPLINE
 
 
-def _discipline_sort_key(name: str) -> tuple[int, str]:
+def get_discipline_sort_key(discipline) -> tuple:
+    name = _discipline_name(discipline)
     if name == DEFAULT_DISCIPLINE:
-        return (1, "")
-    return (0, name.casefold())
+        return (3, 0, "")
+
+    code = ""
+    if discipline is not None and not isinstance(discipline, str):
+        code = str(getattr(discipline, "code", "") or "").strip()
+
+    if code:
+        try:
+            return (0, int(code), name.casefold())
+        except ValueError:
+            return (1, code.casefold(), name.casefold())
+
+    return (2, 0, name.casefold())
 
 
 def group_measurement_data_by_discipline(period: MeasurementPeriod) -> OrderedDict:
@@ -220,9 +239,11 @@ def group_measurement_data_by_discipline(period: MeasurementPeriod) -> OrderedDi
     ]
 
     grouped: dict[str, dict[str, list[list]]] = {}
+    discipline_sort_keys: dict[str, tuple] = {}
 
-    def bucket(discipline: str | None) -> dict[str, list[list]]:
+    def bucket(discipline) -> dict[str, list[list]]:
         name = _discipline_name(discipline)
+        discipline_sort_keys.setdefault(name, get_discipline_sort_key(discipline))
         return grouped.setdefault(name, {"contracted": [], "extras": [], "overflow": []})
 
     contracted_lines.sort(
@@ -299,7 +320,7 @@ def group_measurement_data_by_discipline(period: MeasurementPeriod) -> OrderedDi
         )
 
     ordered: OrderedDict[str, dict[str, list[list]]] = OrderedDict()
-    for discipline in sorted(grouped, key=_discipline_sort_key):
+    for discipline in sorted(grouped, key=lambda name: discipline_sort_keys.get(name, (3, 0, ""))):
         data = grouped[discipline]
         data["contracted"].sort(key=lambda row: (row[0], row[2]))
         data["extras"].sort(key=lambda row: (row[0], row[1]))
