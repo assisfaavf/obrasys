@@ -39,6 +39,7 @@ SUBTITLE_FONT = Font(size=10, bold=True)
 QTY_FORMAT = '[$-416] #,##0.00'
 PERCENT_FORMAT = '0.00%'
 CURRENCY_FORMAT = '[$R$-416] #,##0.00'
+DEFAULT_DISCIPLINE = "SEM DISCIPLINA"
 
 
 def _to_decimal(value) -> Decimal:
@@ -157,7 +158,7 @@ def _build_render_context(period: MeasurementPeriod) -> dict:
     }
 
 
-def _resolve_discipline(line) -> str | None:
+def _resolve_discipline(line):
     candidates = [
         getattr(line, "discipline", None),
         getattr(line, "discipline_name", None),
@@ -181,29 +182,47 @@ def _resolve_discipline(line) -> str | None:
             if text:
                 return text
             continue
-        for attr in ("name", "code", "title"):
-            nested = getattr(candidate, attr, None)
-            if nested:
-                return str(nested)
-        return str(candidate)
+        return candidate
     return None
 
 
-def _order_grouped_rows(rows: list[dict]) -> tuple[OrderedDict, bool]:
-    has_discipline = any(row["discipline"] for row in rows)
-    if not has_discipline:
-        return OrderedDict({None: [row["values"] for row in rows]}), False
+def _discipline_name(value) -> str:
+    if value is None:
+        return DEFAULT_DISCIPLINE
+    if isinstance(value, str):
+        text = value.strip()
+        return text or DEFAULT_DISCIPLINE
+    for attr in ("name", "code", "title"):
+        nested = getattr(value, attr, None)
+        if nested:
+            text = str(nested).strip()
+            if text:
+                return text
+    text = str(value).strip()
+    return text or DEFAULT_DISCIPLINE
 
-    grouped: OrderedDict[str, list[list]] = OrderedDict()
-    for row in rows:
-        key = row["discipline"] or "Sem disciplina"
-        grouped.setdefault(key, []).append(row["values"])
-    return grouped, True
+
+def get_discipline_sort_key(discipline) -> tuple:
+    name = _discipline_name(discipline)
+    if name == DEFAULT_DISCIPLINE:
+        return (3, 0, "")
+
+    code = ""
+    if discipline is not None and not isinstance(discipline, str):
+        code = str(getattr(discipline, "code", "") or "").strip()
+
+    if code:
+        try:
+            return (0, int(code), name.casefold())
+        except ValueError:
+            return (1, code.casefold(), name.casefold())
+
+    return (2, 0, name.casefold())
 
 
-def _build_period_data(period: MeasurementPeriod) -> dict:
+def group_measurement_data_by_discipline(period: MeasurementPeriod) -> OrderedDict:
     lines = list(
-        period.lines.select_related("item", "item__unit", "location", "extra_unit").order_by("id")
+        period.lines.select_related("item", "item__unit", "item__discipline", "location", "extra_unit").order_by("id")
     )
 
     contracted_lines = [
@@ -219,8 +238,13 @@ def _build_period_data(period: MeasurementPeriod) -> dict:
         if line.line_kind == MeasurementLineKind.EXTRA and _to_decimal(line.qty_period) > 0
     ]
 
-    contracted_rows_raw: list[dict] = []
-    overflow_rows_raw: list[dict] = []
+    grouped: dict[str, dict[str, list[list]]] = {}
+    discipline_sort_keys: dict[str, tuple] = {}
+
+    def bucket(discipline) -> dict[str, list[list]]:
+        name = _discipline_name(discipline)
+        discipline_sort_keys.setdefault(name, get_discipline_sort_key(discipline))
+        return grouped.setdefault(name, {"contracted": [], "extras": [], "overflow": []})
 
     contracted_lines.sort(
         key=lambda line: (
@@ -247,45 +271,33 @@ def _build_period_data(period: MeasurementPeriod) -> dict:
         total_period = contracted_effective_qty * unit_total
 
         if contracted_effective_qty > 0:
-            contracted_rows_raw.append(
-                {
-                    "discipline": _resolve_discipline(line),
-                    "values": [
-                        _to_text(item.eap_code),
-                        _to_text(item.description),
-                        _to_text(getattr(line.location, "code", None)),
-                        _to_text(getattr(item.unit, "code", None)),
-                        contracted_qty,
-                        previous,
-                        contracted_effective_qty,
-                        accumulated,
-                        percent,
-                        total_period,
-                    ],
-                }
+            bucket(_resolve_discipline(line))["contracted"].append(
+                [
+                    _to_text(item.eap_code),
+                    _to_text(item.description),
+                    _to_text(getattr(line.location, "code", None)),
+                    _to_text(getattr(item.unit, "code", None)),
+                    contracted_qty,
+                    previous,
+                    contracted_effective_qty,
+                    accumulated,
+                    percent,
+                    total_period,
+                ]
             )
 
         if excess_qty > 0:
-            overflow_rows_raw.append(
-                {
-                    "sort": (
-                        _to_text(item.eap_code),
-                        _to_text(getattr(line.location, "code", "")),
-                        line.id,
-                    ),
-                    "values": [
-                        _to_text(item.eap_code),
-                        _to_text(item.description),
-                        _to_text(getattr(line.location, "code", None)),
-                        _to_text(getattr(item.unit, "code", None)),
-                        excess_qty,
-                        excess_qty * unit_total,
-                        _to_text(line.excess_justification),
-                    ],
-                }
+            bucket(_resolve_discipline(line))["overflow"].append(
+                [
+                    _to_text(item.eap_code),
+                    _to_text(item.description),
+                    _to_text(getattr(line.location, "code", None)),
+                    excess_qty,
+                    excess_qty * unit_total,
+                    _to_text(line.excess_justification),
+                ]
             )
 
-    extra_rows_raw: list[dict] = []
     extra_lines.sort(
         key=lambda line: (
             _to_text(line.extra_description),
@@ -296,32 +308,36 @@ def _build_period_data(period: MeasurementPeriod) -> dict:
     for line in extra_lines:
         qty = _to_decimal(line.qty_period)
         total = qty * (_to_decimal(line.extra_pu_material) + _to_decimal(line.extra_pu_labor))
-        extra_rows_raw.append(
-            {
-                "discipline": _resolve_discipline(line),
-                "values": [
-                    _to_text(line.extra_description),
-                    _to_text(getattr(line.location, "code", None)),
-                    _to_text(getattr(line.extra_unit, "code", None)),
-                    qty,
-                    total,
-                    _to_text(line.justification),
-                ],
-            }
+        bucket(_resolve_discipline(line))["extras"].append(
+            [
+                _to_text(line.extra_description),
+                _to_text(getattr(line.location, "code", None)),
+                _to_text(getattr(line.extra_unit, "code", None)),
+                qty,
+                total,
+                _to_text(line.justification),
+            ]
         )
 
-    overflow_rows = [row["values"] for row in sorted(overflow_rows_raw, key=lambda row: row["sort"])]
+    ordered: OrderedDict[str, dict[str, list[list]]] = OrderedDict()
+    for discipline in sorted(grouped, key=lambda name: discipline_sort_keys.get(name, (3, 0, ""))):
+        data = grouped[discipline]
+        data["contracted"].sort(key=lambda row: (row[0], row[2]))
+        data["extras"].sort(key=lambda row: (row[0], row[1]))
+        data["overflow"].sort(key=lambda row: (row[0], row[2]))
+        ordered[discipline] = data
+    return ordered
 
-    contracted_grouped, contracted_grouped_by_discipline = _order_grouped_rows(contracted_rows_raw)
-    extra_grouped, extra_grouped_by_discipline = _order_grouped_rows(extra_rows_raw)
 
+def _build_period_data(period: MeasurementPeriod) -> dict:
+    grouped_by_discipline = group_measurement_data_by_discipline(period)
     return {
-        "contracted_grouped": contracted_grouped,
-        "extra_grouped": extra_grouped,
-        "contracted_grouped_by_discipline": contracted_grouped_by_discipline,
-        "extra_grouped_by_discipline": extra_grouped_by_discipline,
-        "overflow_rows": overflow_rows,
-        "has_rows": bool(contracted_lines or extra_lines),
+        "disciplines": grouped_by_discipline,
+        "has_rows": any(
+            section_rows
+            for discipline_data in grouped_by_discipline.values()
+            for section_rows in discipline_data.values()
+        ),
     }
 
 
@@ -445,6 +461,66 @@ def _write_grouped_table_block(
             left_align_cols=left_align_cols,
             number_formats=number_formats,
         )
+    return row + 1
+
+
+def write_discipline_block(ws: Worksheet, discipline_name: str, grouped_data: dict, start_row: int) -> int:
+    row = _write_block_title(ws, start_row, f"DISCIPLINA: {discipline_name}")
+
+    if grouped_data["contracted"]:
+        row = _write_block_title(ws, row, "ITENS CONTRATADOS")
+        row = _write_table(
+            ws,
+            row,
+            headers=[
+                "EAP",
+                "Descricao",
+                "Local",
+                "Und",
+                "Contratado",
+                "Anterior",
+                "Periodo",
+                "Acumulado",
+                "%",
+                "Total Periodo",
+            ],
+            rows=grouped_data["contracted"],
+            column_widths=[12, 44, 10, 8, 12, 12, 12, 12, 8, 14],
+            left_align_cols={1},
+            number_formats={
+                4: QTY_FORMAT,
+                5: QTY_FORMAT,
+                6: QTY_FORMAT,
+                7: QTY_FORMAT,
+                8: PERCENT_FORMAT,
+                9: CURRENCY_FORMAT,
+            },
+        )
+
+    if grouped_data["extras"]:
+        row = _write_block_title(ws, row, "ITENS EXTRAS")
+        row = _write_table(
+            ws,
+            row,
+            headers=["Descricao", "Local", "Und", "Qtd", "Total", "Justificativa"],
+            rows=grouped_data["extras"],
+            column_widths=[44, 10, 8, 12, 14, 28],
+            left_align_cols={0, 5},
+            number_formats={3: QTY_FORMAT, 4: CURRENCY_FORMAT},
+        )
+
+    if grouped_data["overflow"]:
+        row = _write_block_title(ws, row, "ITENS COM EXCEDENTE")
+        row = _write_table(
+            ws,
+            row,
+            headers=["EAP", "Descricao", "Local", "Excedente", "Total", "Justificativa"],
+            rows=grouped_data["overflow"],
+            column_widths=[12, 44, 10, 12, 14, 28],
+            left_align_cols={1, 5},
+            number_formats={3: QTY_FORMAT, 4: CURRENCY_FORMAT},
+        )
+
     return row + 1
 
 
@@ -584,54 +660,8 @@ def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict, context:
 
     row = _render_header(ws, period, context)
 
-    row = _write_grouped_table_block(
-        ws,
-        row,
-        title="A) ITENS CONTRATADOS",
-        grouped_rows=data["contracted_grouped"],
-        show_groups=data["contracted_grouped_by_discipline"],
-        headers=[
-            "EAP",
-            "Descricao",
-            "Local",
-            "Und",
-            "Contratado",
-            "Anterior",
-            "Periodo",
-            "Acumulado",
-            "%",
-            "Total Periodo",
-        ],
-        column_widths=[12, 44, 10, 8, 12, 12, 12, 12, 8, 14],
-        left_align_cols={1},
-        number_formats={4: QTY_FORMAT, 5: QTY_FORMAT, 6: QTY_FORMAT, 7: QTY_FORMAT, 8: PERCENT_FORMAT, 9: CURRENCY_FORMAT},
-        empty_message="Sem itens contratados com quantidade no periodo.",
-    )
-
-    row = _write_grouped_table_block(
-        ws,
-        row,
-        title="B) ITENS EXTRAS",
-        grouped_rows=data["extra_grouped"],
-        show_groups=data["extra_grouped_by_discipline"],
-        headers=["Descricao", "Local", "Und", "Qtd", "Total", "Justificativa"],
-        column_widths=[44, 10, 8, 12, 14, 28],
-        left_align_cols={0, 5},
-        number_formats={3: QTY_FORMAT, 4: CURRENCY_FORMAT},
-        empty_message="Sem itens extras com quantidade no periodo.",
-    )
-
-    if data["overflow_rows"]:
-        row = _write_block_title(ws, row, "C) ITENS COM EXCEDENTE")
-        row = _write_table(
-            ws,
-            row,
-            headers=["EAP", "Descricao", "Local", "Und", "Excedente", "Total", "Justificativa"],
-            rows=data["overflow_rows"],
-            column_widths=[12, 44, 10, 8, 12, 14, 28],
-            left_align_cols={1, 6},
-            number_formats={4: QTY_FORMAT, 5: CURRENCY_FORMAT},
-        )
+    for discipline_name, discipline_data in data["disciplines"].items():
+        row = write_discipline_block(ws, discipline_name, discipline_data, row)
 
     _render_summary_and_signatures(ws, row, context)
 
@@ -640,7 +670,7 @@ def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict, context:
 def generate_xlsx_boletim(period_id: int):
     period = (
         MeasurementPeriod.objects.select_related("project", "project__client")
-        .prefetch_related("lines__item__unit", "lines__location", "lines__extra_unit")
+        .prefetch_related("lines__item__unit", "lines__item__discipline", "lines__location", "lines__extra_unit")
         .get(pk=period_id)
     )
 

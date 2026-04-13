@@ -10,7 +10,7 @@ from openpyxl import Workbook, load_workbook
 
 from billing.models import MeasurementLine, MeasurementLineKind, MeasurementPeriod
 from billing.services.measurement_calc import finalize_period
-from catalog.models import BudgetItem, Unit
+from catalog.models import BudgetItem, Discipline, Unit
 from core.models import Client, Project
 from exports.models import ExportStatus, ExportType, MeasurementExport
 from exports.services.sienge_export import (
@@ -18,7 +18,7 @@ from exports.services.sienge_export import (
     generate_sienge_snapshot,
     get_measurement_sheet_name,
 )
-from exports.services.xlsx_boletim import generate_xlsx_boletim
+from exports.services.xlsx_boletim import DEFAULT_DISCIPLINE, generate_xlsx_boletim, group_measurement_data_by_discipline
 
 
 class XlsxBoletimServiceTests(TestCase):
@@ -26,6 +26,7 @@ class XlsxBoletimServiceTests(TestCase):
         self.client_obj = Client.objects.create(name="Cliente Export")
         self.project = Project.objects.create(name="Projeto Export", client=self.client_obj)
         self.unit = Unit.objects.create(code="M2_EXPORT", name="Metro quadrado")
+        self.discipline_electrical = Discipline.objects.create(name="ELETRICA")
         self.item = BudgetItem.objects.create(
             project=self.project,
             eap_code="1.1",
@@ -314,8 +315,201 @@ class XlsxBoletimServiceTests(TestCase):
             contracted_eap_idx = contracted_row.index("2.1")
             overflow_eap_idx = overflow_row.index("2.1")
             self.assertEqual(Decimal(str(contracted_row[contracted_eap_idx + 6])), Decimal("20"))
-            self.assertEqual(Decimal(str(overflow_row[overflow_eap_idx + 4])), Decimal("10"))
-            self.assertEqual(overflow_row[overflow_eap_idx + 6], "Aprovacao tecnica")
+            self.assertEqual(Decimal(str(overflow_row[overflow_eap_idx + 3])), Decimal("10"))
+            self.assertEqual(overflow_row[overflow_eap_idx + 5], "Aprovacao tecnica")
+
+    def test_group_measurement_data_by_discipline(self):
+        electrical = Discipline.objects.create(name="ELETRICA TESTE")
+        hydraulic = Discipline.objects.create(name="HIDROSSANITARIA")
+        electrical_item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="2.1",
+            description="Eletrica",
+            unit=self.unit,
+            qty_contracted=Decimal("100"),
+            pu_material=Decimal("10"),
+            pu_labor=Decimal("5"),
+            discipline=electrical,
+        )
+        hydraulic_item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="3.1",
+            description="Hidraulica",
+            unit=self.unit,
+            qty_contracted=Decimal("100"),
+            pu_material=Decimal("8"),
+            pu_labor=Decimal("4"),
+            discipline=hydraulic,
+        )
+        period = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=4,
+            ref_month=date(2026, 5, 1),
+            start_date=date(2026, 5, 1),
+            end_date=date(2026, 5, 31),
+        )
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=hydraulic_item,
+            qty_period=Decimal("2"),
+        )
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=electrical_item,
+            qty_period=Decimal("3"),
+        )
+
+        grouped = group_measurement_data_by_discipline(period)
+
+        self.assertEqual(list(grouped.keys()), ["ELETRICA TESTE", "HIDROSSANITARIA"])
+        self.assertEqual(grouped["ELETRICA TESTE"]["contracted"][0][0], "2.1")
+        self.assertEqual(grouped["HIDROSSANITARIA"]["contracted"][0][0], "3.1")
+
+    def test_group_measurement_data_orders_disciplines_by_numeric_code(self):
+        discipline_10 = Discipline.objects.create(name="Disciplina dez", code="10")
+        discipline_2 = Discipline.objects.create(name="Disciplina dois", code="2")
+        discipline_1 = Discipline.objects.create(name="Disciplina um", code="1")
+        discipline_3 = Discipline.objects.create(name="Disciplina tres", code="3")
+        period = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=7,
+            ref_month=date(2026, 8, 1),
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 31),
+        )
+
+        for index, discipline in enumerate(
+            [discipline_10, discipline_2, discipline_1, discipline_3, None],
+            start=1,
+        ):
+            item = BudgetItem.objects.create(
+                project=self.project,
+                eap_code=f"7.{index}",
+                description=f"Item {index}",
+                unit=self.unit,
+                qty_contracted=Decimal("100"),
+                pu_material=Decimal("10"),
+                pu_labor=Decimal("5"),
+                discipline=discipline,
+            )
+            MeasurementLine.objects.create(
+                period=period,
+                line_kind=MeasurementLineKind.CONTRACTED,
+                item=item,
+                qty_period=Decimal("1"),
+            )
+
+        grouped = group_measurement_data_by_discipline(period)
+
+        self.assertEqual(
+            list(grouped.keys()),
+            [
+                "Disciplina um",
+                "Disciplina dois",
+                "Disciplina tres",
+                "Disciplina dez",
+                DEFAULT_DISCIPLINE,
+            ],
+        )
+
+    def test_group_measurement_data_uses_sem_disciplina_fallback(self):
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="4.1",
+            description="Sem disciplina",
+            unit=self.unit,
+            qty_contracted=Decimal("100"),
+            pu_material=Decimal("10"),
+            pu_labor=Decimal("5"),
+        )
+        period = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=5,
+            ref_month=date(2026, 6, 1),
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 30),
+        )
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("2"),
+        )
+
+        grouped = group_measurement_data_by_discipline(period)
+
+        self.assertEqual(list(grouped.keys()), [DEFAULT_DISCIPLINE])
+        self.assertEqual(grouped[DEFAULT_DISCIPLINE]["contracted"][0][0], "4.1")
+
+    def test_excess_grouped_by_original_item_discipline(self):
+        discipline = Discipline.objects.create(name="ESTRUTURAL")
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="5.1",
+            description="Item excedente",
+            unit=self.unit,
+            qty_contracted=Decimal("10"),
+            pu_material=Decimal("10"),
+            pu_labor=Decimal("5"),
+            discipline=discipline,
+        )
+        period = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=6,
+            ref_month=date(2026, 7, 1),
+            start_date=date(2026, 7, 1),
+            end_date=date(2026, 7, 31),
+        )
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("12"),
+            excess_qty=Decimal("2"),
+            excess_justification="Necessario em campo",
+        )
+
+        grouped = group_measurement_data_by_discipline(period)
+
+        self.assertEqual(grouped["ESTRUTURAL"]["contracted"][0][0], "5.1")
+        self.assertEqual(grouped["ESTRUTURAL"]["overflow"][0][0], "5.1")
+        self.assertEqual(grouped["ESTRUTURAL"]["overflow"][0][5], "Necessario em campo")
+
+    def test_generate_xlsx_boletim_renders_discipline_blocks(self):
+        self.item.discipline = self.discipline_electrical
+        self.item.save(update_fields=["discipline"])
+
+        with tempfile.TemporaryDirectory(prefix="xlsx-discipline-block-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_template(temp_root / "boletim_template.xlsx")
+            logo_path = self._create_logo(temp_root / "Logo-rem.png")
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.xlsx_boletim.get_template_path",
+                side_effect=self._template_side_effect(template_path, logo_path),
+            ), patch(
+                "exports.services.xlsx_boletim.get_exports_dir", return_value=exports_dir
+            ):
+                export_record, output_path = generate_xlsx_boletim(self.period.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            workbook = load_workbook(output_path)
+            sheet = workbook[workbook.sheetnames[0]]
+            values = [
+                cell
+                for row in sheet.iter_rows(values_only=True)
+                for cell in row
+                if cell not in (None, "")
+            ]
+            self.assertIn("DISCIPLINA: ELETRICA", values)
+            self.assertIn(f"DISCIPLINA: {DEFAULT_DISCIPLINE}", values)
+            self.assertIn("ITENS CONTRATADOS", values)
+            self.assertIn("ITENS EXTRAS", values)
+            self.assertIn("Assinaturas", values)
 
 
 class SiengeExportServiceTests(TestCase):

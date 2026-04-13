@@ -13,6 +13,22 @@ class Unit(models.Model):
         return f"{self.code} - {self.name}"
 
 
+class Discipline(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    code = models.CharField(max_length=40, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        if self.code:
+            return f"{self.code} - {self.name}"
+        return self.name
+
+
 class BudgetItem(models.Model):
     project = models.ForeignKey("core.Project", on_delete=models.CASCADE, related_name="budget_items")
     eap_code = models.CharField(max_length=40)
@@ -21,6 +37,13 @@ class BudgetItem(models.Model):
     qty_contracted = models.DecimalField(max_digits=14, decimal_places=3)
     pu_material = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0"))
     pu_labor = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0"))
+    discipline = models.ForeignKey(
+        "catalog.Discipline",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="budget_items",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:

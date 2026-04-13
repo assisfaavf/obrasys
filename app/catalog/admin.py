@@ -7,12 +7,17 @@ from django.shortcuts import get_object_or_404, render
 from django.urls import path, reverse
 from django.utils.html import format_html
 
-from catalog.forms import BudgetImportUploadForm
+from catalog.forms import (
+    BudgetImportUploadForm,
+    BudgetItemAdditionalMaterialForm,
+    BudgetItemAdditionalMaterialInlineFormSet,
+)
 from catalog.models import (
     BudgetImportJob,
     BudgetImportJobStatus,
     BudgetItem,
     BudgetItemAdditionalMaterial,
+    Discipline,
     Unit,
 )
 from catalog.services.budget_import import apply_import_job, create_preview_job
@@ -20,10 +25,11 @@ from catalog.services.budget_import import apply_import_job, create_preview_job
 
 class BudgetItemAdditionalMaterialInline(admin.TabularInline):
     model = BudgetItemAdditionalMaterial
+    form = BudgetItemAdditionalMaterialForm
+    formset = BudgetItemAdditionalMaterialInlineFormSet
     fk_name = "parent_item"
     extra = 1
     fields = ("additional_item", "quantity_per_unit", "note", "is_active")
-    autocomplete_fields = ("additional_item",)
 
 
 @admin.register(Unit)
@@ -32,10 +38,26 @@ class UnitAdmin(admin.ModelAdmin):
     search_fields = ("code", "name")
 
 
+@admin.register(Discipline)
+class DisciplineAdmin(admin.ModelAdmin):
+    list_display = ("name", "code", "is_active", "updated_at")
+    list_filter = ("is_active",)
+    search_fields = ("name", "code")
+    ordering = ("name",)
+
+
 @admin.register(BudgetItem)
 class BudgetItemAdmin(admin.ModelAdmin):
-    list_display = ("project", "eap_code", "description", "unit", "qty_contracted", "is_active")
-    list_filter = ("project", "is_active", "unit")
+    list_display = (
+        "project",
+        "eap_code",
+        "description",
+        "discipline",
+        "unit",
+        "qty_contracted",
+        "is_active",
+    )
+    list_filter = ("project", "discipline", "is_active", "unit")
     search_fields = ("project__name", "eap_code", "description")
     ordering = ("project", "eap_code")
     inlines = (BudgetItemAdditionalMaterialInline,)
