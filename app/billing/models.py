@@ -61,7 +61,15 @@ class MeasurementPeriod(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     finalized_at = models.DateTimeField(null=True, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
+    in_review_at = models.DateTimeField(null=True, blank=True)
     authorized_at = models.DateTimeField(null=True, blank=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    sent_note = models.TextField(blank=True)
+    review_note = models.TextField(blank=True)
+    authorization_note = models.TextField(blank=True)
+    rejection_reason = models.TextField(blank=True)
+    cancellation_reason = models.TextField(blank=True)
     total_material_snapshot = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal("0")
     )
@@ -124,6 +132,31 @@ class MeasurementPeriod(models.Model):
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+class MeasurementWorkflowHistory(models.Model):
+    period = models.ForeignKey(
+        "billing.MeasurementPeriod",
+        on_delete=models.CASCADE,
+        related_name="workflow_history",
+    )
+    from_status = models.CharField(max_length=20, choices=WorkflowStatus.choices)
+    to_status = models.CharField(max_length=20, choices=WorkflowStatus.choices)
+    note = models.TextField(blank=True)
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="measurement_workflow_changes",
+    )
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-changed_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.period} - {self.from_status} -> {self.to_status}"
 
 
 class MeasurementLine(models.Model):

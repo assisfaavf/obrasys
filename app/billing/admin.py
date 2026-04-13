@@ -1,14 +1,42 @@
 from django.contrib import admin
 
-from billing.models import MeasurementLine, MeasurementLineHistory, MeasurementPeriod, MeasurementSettlement
+from billing.models import (
+    MeasurementLine,
+    MeasurementLineHistory,
+    MeasurementPeriod,
+    MeasurementSettlement,
+    MeasurementWorkflowHistory,
+)
+
+
+class MeasurementWorkflowHistoryInline(admin.TabularInline):
+    model = MeasurementWorkflowHistory
+    extra = 0
+    can_delete = False
+    readonly_fields = ("from_status", "to_status", "note", "changed_by", "changed_at")
+
+    def has_add_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(MeasurementPeriod)
 class MeasurementPeriodAdmin(admin.ModelAdmin):
-    list_display = ("project", "number", "ref_month", "workflow_status", "financial_status", "created_at")
+    list_display = (
+        "project",
+        "number",
+        "ref_month",
+        "workflow_status",
+        "financial_status",
+        "finalized_at",
+        "sent_at",
+        "in_review_at",
+        "authorized_at",
+        "created_at",
+    )
     list_filter = ("project", "workflow_status", "financial_status")
     search_fields = ("project__name", "=number")
     ordering = ("project", "number")
+    inlines = [MeasurementWorkflowHistoryInline]
 
 
 @admin.register(MeasurementLine)
@@ -51,3 +79,12 @@ class MeasurementLineHistoryAdmin(admin.ModelAdmin):
         "created_by__username",
     )
     ordering = ("-application_date", "-created_at", "-id")
+
+
+@admin.register(MeasurementWorkflowHistory)
+class MeasurementWorkflowHistoryAdmin(admin.ModelAdmin):
+    list_display = ("period", "from_status", "to_status", "changed_by", "changed_at")
+    list_filter = ("to_status", "from_status", "period__project")
+    search_fields = ("period__project__name", "note", "changed_by__username")
+    ordering = ("-changed_at", "-id")
+    readonly_fields = ("period", "from_status", "to_status", "note", "changed_by", "changed_at")

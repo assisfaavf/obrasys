@@ -35,6 +35,7 @@ from billing.services.measurement_calc import (
     finalize_period,
     get_item_cumulative,
 )
+from billing.services.workflow import transition_measurement_status
 from core.forms import ProjectLocationTemplateForm
 from core.models import Project
 from core.services import apply_location_template_to_project
@@ -42,6 +43,29 @@ from exports.models import ExportStatus
 from exports.services import generate_sienge_master, generate_sienge_snapshot, generate_xlsx_boletim
 from pricing.models import AdjustmentApplyTo
 from utils.paths import get_template_path
+
+
+WORKFLOW_ACTIONS = {
+    "workflow_send": WorkflowStatus.SENT,
+    "workflow_review": WorkflowStatus.IN_REVIEW,
+    "workflow_authorize": WorkflowStatus.AUTHORIZED,
+    "workflow_reject": WorkflowStatus.REJECTED,
+    "workflow_cancel": WorkflowStatus.CANCELLED,
+    "workflow_reopen_rejected": WorkflowStatus.DRAFT,
+    "workflow_reopen_finalized": WorkflowStatus.DRAFT,
+    "workflow_return_finalized": WorkflowStatus.FINALIZED,
+}
+
+WORKFLOW_NOTE_FIELDS = {
+    "workflow_send": "sent_note",
+    "workflow_review": "review_note",
+    "workflow_authorize": "authorization_note",
+    "workflow_reject": "rejection_reason",
+    "workflow_cancel": "cancellation_reason",
+    "workflow_reopen_rejected": "workflow_note",
+    "workflow_reopen_finalized": "workflow_note",
+    "workflow_return_finalized": "workflow_note",
+}
 
 
 def _compute_indexed_preview(
@@ -277,6 +301,27 @@ def measurement_detail_view(request, measurement_id: int):
                     )
             return redirect("billing:measurement_detail", measurement_id=period.id)
 
+        elif action in WORKFLOW_ACTIONS:
+            if action == "workflow_reopen_finalized" and request.POST.get("confirm_reopen") != "on":
+                messages.error(request, "Confirme a reabertura da medicao finalizada.")
+                return redirect("billing:measurement_detail", measurement_id=period.id)
+
+            note_field = WORKFLOW_NOTE_FIELDS[action]
+            note = request.POST.get(note_field, "")
+            try:
+                updated_period = transition_measurement_status(
+                    period,
+                    WORKFLOW_ACTIONS[action],
+                    user=request.user,
+                    note=note,
+                )
+            except ValidationError as exc:
+                for message in exc.messages:
+                    messages.error(request, message)
+            else:
+                messages.success(request, f"Status atualizado para {updated_period.workflow_status}.")
+            return redirect("billing:measurement_detail", measurement_id=period.id)
+
         elif action == "add_settlement":
             settlement_form = SettlementForm(request.POST, prefix="settlement")
             if settlement_form.is_valid():
@@ -373,6 +418,7 @@ def measurement_detail_view(request, measurement_id: int):
     )
 
     settlements = period.settlements.order_by("event_date", "id")
+    workflow_history = period.workflow_history.select_related("changed_by").all()
 
     total_material, total_labor, total_total = compute_period_totals(period.id)
     indexed_preview = total_total
@@ -414,6 +460,8 @@ def measurement_detail_view(request, measurement_id: int):
             "contracted_item_additional_materials": contracted_item_additional_materials,
             "extra_lines": extra_lines,
             "settlements": settlements,
+            "workflow_history": workflow_history,
+            "can_reopen_finalized": request.user.has_perm("billing.change_measurementperiod"),
             "total_material": total_material,
             "total_labor": total_labor,
             "total_total": total_total,

@@ -6,6 +6,7 @@ from billing.services.measurement_calc import (
     update_financial_status,
     validate_finalize,
 )
+from billing.services.workflow import can_transition, transition_measurement_status
 
 __all__ = [
     "get_item_cumulative",
@@ -14,4 +15,6 @@ __all__ = [
     "validate_finalize",
     "finalize_period",
     "update_financial_status",
+    "can_transition",
+    "transition_measurement_status",
 ]
