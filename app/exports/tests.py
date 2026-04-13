@@ -13,7 +13,11 @@ from billing.services.measurement_calc import finalize_period
 from catalog.models import BudgetItem, Unit
 from core.models import Client, Project
 from exports.models import ExportStatus, ExportType, MeasurementExport
-from exports.services.sienge_export import generate_sienge_master, generate_sienge_snapshot
+from exports.services.sienge_export import (
+    generate_sienge_master,
+    generate_sienge_snapshot,
+    get_measurement_sheet_name,
+)
 from exports.services.xlsx_boletim import generate_xlsx_boletim
 
 
@@ -444,6 +448,11 @@ class SiengeExportServiceTests(TestCase):
 
         return _resolver
 
+    def test_get_measurement_sheet_name_uses_zero_padded_number(self):
+        self.assertEqual(get_measurement_sheet_name(1), "Medição 01")
+        self.assertEqual(get_measurement_sheet_name(9), "Medição 09")
+        self.assertEqual(get_measurement_sheet_name(10), "Medição 10")
+
     def test_generate_sienge_snapshot_with_contracted_extra_and_excess(self):
         item = BudgetItem.objects.create(
             project=self.project,
@@ -504,6 +513,95 @@ class SiengeExportServiceTests(TestCase):
             self.assertEqual(export_record.summary_json["extras_filled_count"], 1)
             self.assertEqual(export_record.summary_json["excess_filled_count"], 1)
 
+    def test_generate_sienge_snapshot_writes_real_template_individual_sheet(self):
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="1.1.1",
+            description="Item template real",
+            unit=self.unit,
+            qty_contracted=Decimal("10"),
+            pu_material=Decimal("2"),
+            pu_labor=Decimal("3"),
+        )
+        period = self._create_period(1, date(2026, 4, 1))
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("4"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-real-template-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                export_record, output_path = generate_sienge_snapshot(period.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            workbook = load_workbook(output_path)
+            measurement_sheet = workbook["Medição 01"]
+            self.assertEqual(measurement_sheet["B6"].value, "1.1.1")
+            self.assertEqual(Decimal(str(measurement_sheet["G6"].value)), Decimal("4.000"))
+            self.assertEqual(Decimal(str(measurement_sheet["I6"].value)), Decimal("20.00"))
+
+    def test_generate_sienge_snapshot_individual_sheet_shows_only_applied_items(self):
+        BudgetItem.objects.create(
+            project=self.project,
+            eap_code="1.1.1",
+            description="Item sem aplicacao",
+            unit=self.unit,
+            qty_contracted=Decimal("10"),
+            pu_material=Decimal("2"),
+            pu_labor=Decimal("3"),
+        )
+        applied_item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="1.1.2",
+            description="Item aplicado",
+            unit=self.unit,
+            qty_contracted=Decimal("10"),
+            pu_material=Decimal("4"),
+            pu_labor=Decimal("6"),
+        )
+        period = self._create_period(1, date(2026, 4, 1))
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=applied_item,
+            qty_period=Decimal("5"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-only-applied-items-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=4)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                export_record, output_path = generate_sienge_snapshot(period.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            workbook = load_workbook(output_path)
+            contract_sheet = workbook["Itens de Contrato"]
+            measurement_sheet = workbook["Medição 01"]
+            self.assertEqual(contract_sheet["B6"].value, "1.1.1")
+            self.assertEqual(contract_sheet["B7"].value, "1.1.2")
+            self.assertEqual(measurement_sheet["B6"].value, "1.1.2")
+            self.assertEqual(Decimal(str(measurement_sheet["G6"].value)), Decimal("5.000"))
+            self.assertIsNone(measurement_sheet["B7"].value)
+            self.assertEqual(export_record.summary_json["periods"][0]["measurement_cells_written"], ["G6"])
+
     def test_generate_sienge_master_with_two_measurements(self):
         item = BudgetItem.objects.create(
             project=self.project,
@@ -556,6 +654,111 @@ class SiengeExportServiceTests(TestCase):
                 Decimal("7.000"),
             )
 
+    def test_generate_sienge_master_writes_each_period_to_its_individual_sheet(self):
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="2.1.2",
+            description="Forro",
+            unit=self.unit,
+            qty_contracted=Decimal("20"),
+            pu_material=Decimal("5"),
+            pu_labor=Decimal("5"),
+        )
+        period1 = self._create_period(1, date(2026, 1, 1))
+        period2 = self._create_period(2, date(2026, 2, 1))
+        MeasurementLine.objects.create(
+            period=period1,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("6"),
+        )
+        MeasurementLine.objects.create(
+            period=period2,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("8"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-master-individual-sheets-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=4)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                export_record, output_path = generate_sienge_master(self.project.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            workbook = load_workbook(output_path)
+            self.assertEqual(Decimal(str(workbook["Medição 01"]["G6"].value)), Decimal("6.000"))
+            self.assertEqual(Decimal(str(workbook["Medição 01"]["I6"].value)), Decimal("60.00"))
+            self.assertEqual(Decimal(str(workbook["Medição 02"]["G6"].value)), Decimal("8.000"))
+            self.assertEqual(Decimal(str(workbook["Medição 02"]["I6"].value)), Decimal("80.00"))
+            self.assertEqual(export_record.summary_json["periods"][0]["sheet_name_used"], "Medição 01")
+            self.assertEqual(export_record.summary_json["periods"][1]["sheet_name_used"], "Medição 02")
+
+    def test_generate_sienge_master_reuses_existing_file(self):
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="2.2.1",
+            description="Revestimento",
+            unit=self.unit,
+            qty_contracted=Decimal("20"),
+            pu_material=Decimal("6"),
+            pu_labor=Decimal("4"),
+        )
+        period1 = self._create_period(1, date(2026, 1, 1))
+        MeasurementLine.objects.create(
+            period=period1,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("4"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-master-reuse-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=4)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                first_export_record, first_output_path = generate_sienge_master(self.project.id)
+
+                workbook = load_workbook(first_output_path)
+                manual_sheet = workbook.create_sheet("Ajustes Manuais")
+                manual_sheet["A1"] = "preservar"
+                workbook.save(first_output_path)
+
+                period2 = self._create_period(2, date(2026, 2, 1))
+                MeasurementLine.objects.create(
+                    period=period2,
+                    line_kind=MeasurementLineKind.CONTRACTED,
+                    item=item,
+                    qty_period=Decimal("3"),
+                )
+                second_export_record, second_output_path = generate_sienge_master(self.project.id)
+
+            self.assertEqual(first_export_record.status, ExportStatus.OK)
+            self.assertEqual(second_export_record.status, ExportStatus.OK)
+            self.assertEqual(first_output_path, second_output_path)
+
+            workbook = load_workbook(second_output_path)
+            self.assertIn("Ajustes Manuais", workbook.sheetnames)
+            self.assertEqual(workbook["Ajustes Manuais"]["A1"].value, "preservar")
+            self.assertEqual(Decimal(str(workbook["Medição 02"]["G6"].value)), Decimal("3.000"))
+
     def test_generate_sienge_snapshot_clones_measurement_sheet_above_12(self):
         item = BudgetItem.objects.create(
             project=self.project,
@@ -593,6 +796,49 @@ class SiengeExportServiceTests(TestCase):
             workbook = load_workbook(output_path)
             self.assertIn("Medição 13", workbook.sheetnames)
             self.assertEqual(workbook["Medição 13"]["H3"].value, 13)
+
+    def test_generate_sienge_snapshot_clones_missing_individual_sheet_and_fills_it(self):
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="3.2.1",
+            description="Pintura",
+            unit=self.unit,
+            qty_contracted=Decimal("10"),
+            pu_material=Decimal("3"),
+            pu_labor=Decimal("2"),
+        )
+        period = self._create_period(2, date(2026, 3, 1))
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("4"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-missing-individual-sheet-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=4)
+            workbook = load_workbook(template_path)
+            del workbook["Medição 02"]
+            workbook.save(template_path)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                export_record, output_path = generate_sienge_snapshot(period.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            workbook = load_workbook(output_path)
+            self.assertIn("Medição 02", workbook.sheetnames)
+            self.assertEqual(workbook["Medição 02"]["H3"].value, 2)
+            self.assertEqual(Decimal(str(workbook["Medição 02"]["G6"].value)), Decimal("4.000"))
+            self.assertEqual(Decimal(str(workbook["Medição 02"]["I6"].value)), Decimal("20.00"))
 
     def test_generate_sienge_snapshot_logs_missing_eap_without_breaking(self):
         item_found = BudgetItem.objects.create(

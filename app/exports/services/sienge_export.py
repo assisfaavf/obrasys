@@ -17,6 +17,7 @@ from utils.paths import get_exports_dir, get_template_path
 
 TEMPLATE_NAME = "sienge_template.xlsx"
 DATA_START_ROW = 6
+HEADER_ROW = 5
 QTY_Q = Decimal("0.001")
 MONEY_Q = Decimal("0.01")
 MEASUREMENT_PATTERN = re.compile(r"^medicao\s+(\d+)$")
@@ -39,7 +40,7 @@ def _normalize_text(value: str) -> str:
     return " ".join(text.lower().split())
 
 
-def _measurement_sheet_title(number: int) -> str:
+def get_measurement_sheet_name(number: int) -> str:
     return f"Medi\u00e7\u00e3o {number:02d}"
 
 
@@ -97,6 +98,17 @@ def _get_measurement_sheets(workbook) -> list:
     return [sheet for _, sheet in sheets]
 
 
+def _find_measurement_sheet(workbook, number: int):
+    target_title = get_measurement_sheet_name(number)
+    if target_title in workbook.sheetnames:
+        return workbook[target_title]
+
+    for sheet in workbook.worksheets:
+        if _parse_measurement_number(sheet.title) == number:
+            return sheet
+    return None
+
+
 def _guess_data_end_row(sheet) -> int:
     last_row = DATA_START_ROW - 1
     for row in range(DATA_START_ROW, sheet.max_row + 1):
@@ -112,6 +124,29 @@ def _clear_cells(sheet, *, row_start: int, row_end: int, col_start: int, col_end
     for row in range(row_start, row_end + 1):
         for column in range(col_start, col_end + 1):
             sheet.cell(row=row, column=column).value = None
+
+
+def _find_header_column(sheet, aliases: tuple[str, ...], default: int) -> int:
+    normalized_aliases = {_normalize_text(alias) for alias in aliases}
+    for column in range(1, sheet.max_column + 1):
+        header = _normalize_text(sheet.cell(row=HEADER_ROW, column=column).value)
+        if header in normalized_aliases:
+            return column
+    return default
+
+
+def _measurement_columns(sheet) -> dict[str, int]:
+    return {
+        "stage": _find_header_column(sheet, ("etapa", "codigo"), 1),
+        "item": _find_header_column(sheet, ("item", "eap"), 2),
+        "description": _find_header_column(sheet, ("descricao", "descrição"), 3),
+        "quantity_contracted": _find_header_column(sheet, ("quantidade contratada",), 4),
+        "value_contracted": _find_header_column(sheet, ("valor contratado",), 5),
+        "balance": _find_header_column(sheet, ("saldo total a medir", "saldo"), 6),
+        "executed_qty": _find_header_column(sheet, ("quantidade executada", "qtd executada"), 7),
+        "executed_percent": _find_header_column(sheet, ("% executado", "%"), 8),
+        "executed_value": _find_header_column(sheet, ("valor executado",), 9),
+    }
 
 
 def _set_project_metadata(workbook, project) -> None:
@@ -211,9 +246,11 @@ def _update_contract_sheet(workbook, items: list[BudgetItem]) -> tuple[dict[str,
 
 
 def clone_measurement_sheet_if_needed(workbook, number: int):
-    target_title = _measurement_sheet_title(number)
-    existing = workbook[target_title] if target_title in workbook.sheetnames else None
+    target_title = get_measurement_sheet_name(number)
+    existing = _find_measurement_sheet(workbook, number)
     if existing is not None:
+        if existing.title != target_title:
+            existing.title = target_title
         return existing
 
     measurement_sheets = _get_measurement_sheets(workbook)
@@ -337,6 +374,87 @@ def _clear_measurement_sheet(sheet, capacity_end: int) -> None:
     sheet["I3"] = None
 
 
+def _write_measurement_row(
+    *,
+    target_sheet,
+    columns: dict[str, int],
+    row: int,
+    stage_value,
+    item_code,
+    description,
+    quantity_contracted: Decimal,
+    pu_material: Decimal,
+    pu_labor: Decimal,
+    cumulative_qty: Decimal,
+    executed_qty: Decimal,
+) -> None:
+    unit_total = pu_material + pu_labor
+    percent_executed = Decimal("0")
+    if quantity_contracted > 0:
+        percent_executed = (cumulative_qty / quantity_contracted).quantize(QTY_Q, rounding=ROUND_HALF_UP)
+
+    target_sheet.cell(row=row, column=columns["stage"]).value = stage_value
+    target_sheet.cell(row=row, column=columns["item"]).value = item_code
+    target_sheet.cell(row=row, column=columns["description"]).value = description
+    target_sheet.cell(row=row, column=columns["quantity_contracted"]).value = quantity_contracted
+    target_sheet.cell(row=row, column=columns["value_contracted"]).value = _q_money(quantity_contracted * unit_total)
+    target_sheet.cell(row=row, column=columns["balance"]).value = _q_qty(
+        max(quantity_contracted - cumulative_qty, Decimal("0"))
+    )
+    target_sheet.cell(row=row, column=columns["executed_qty"]).value = executed_qty
+    target_sheet.cell(row=row, column=columns["executed_percent"]).value = percent_executed
+    target_sheet.cell(row=row, column=columns["executed_value"]).value = _q_money(executed_qty * unit_total)
+
+
+def _write_measured_contract_progress_rows(
+    target_sheet,
+    columns: dict[str, int],
+    row_by_eap: dict[str, int],
+    contracted_progress: dict[str, dict],
+    capacity_end: int,
+):
+    filled_count = 0
+    missing_eap: list[str] = []
+    cells_written: list[str] = []
+
+    ordered_progress = sorted(
+        contracted_progress.items(),
+        key=lambda item: (row_by_eap.get(item[0], 10**9), item[0]),
+    )
+
+    for eap_code, progress in ordered_progress:
+        if progress["quantity"] <= 0:
+            continue
+
+        if eap_code not in row_by_eap:
+            missing_eap.append(eap_code)
+            continue
+
+        row = DATA_START_ROW + filled_count
+        if row > capacity_end:
+            missing_eap.append(eap_code)
+            continue
+
+        item = progress["item"]
+        _write_measurement_row(
+            target_sheet=target_sheet,
+            columns=columns,
+            row=row,
+            stage_value=progress["stage"],
+            item_code=item.eap_code,
+            description=item.description,
+            quantity_contracted=_q_qty(item.qty_contracted),
+            pu_material=_q_money(item.pu_material),
+            pu_labor=_q_money(item.pu_labor),
+            cumulative_qty=progress["cumulative"],
+            executed_qty=progress["quantity"],
+        )
+        filled_count += 1
+        cells_written.append(target_sheet.cell(row=row, column=columns["executed_qty"]).coordinate)
+
+    return filled_count, missing_eap, cells_written
+
+
 def update_sienge_sheet_for_period(workbook, project, period):
     contract_sheet = _find_contract_sheet(workbook)
     if contract_sheet is None:
@@ -356,55 +474,19 @@ def update_sienge_sheet_for_period(workbook, project, period):
             row_by_eap[str(eap_code).strip()] = row
 
     contracted_progress, extra_entries, excess_entries = _build_contract_progress(period)
-    items_by_eap = {
-        item.eap_code: item
-        for item in BudgetItem.objects.select_related("unit").filter(project=project, is_active=True)
-    }
-    missing_eap: list[str] = []
 
     _clear_measurement_sheet(target_sheet, capacity_end)
     target_sheet["H3"] = period.number
     target_sheet["I3"] = _format_period_label(period)
+    columns = _measurement_columns(target_sheet)
 
-    for eap_code, row in row_by_eap.items():
-        item_code = contract_sheet.cell(row=row, column=2).value
-        description = contract_sheet.cell(row=row, column=3).value
-        quantity_contracted = _q_qty(contract_sheet.cell(row=row, column=5).value or Decimal("0"))
-        pu_material = _q_money(contract_sheet.cell(row=row, column=6).value or Decimal("0"))
-        pu_labor = _q_money(contract_sheet.cell(row=row, column=7).value or Decimal("0"))
-        unit_total = pu_material + pu_labor
-
-        progress = contracted_progress.get(eap_code)
-        item = items_by_eap.get(eap_code)
-        executed_qty = progress["quantity"] if progress else Decimal("0")
-        if progress is not None:
-            cumulative_qty = progress["cumulative"]
-        elif item is not None:
-            cumulative_qty = _q_qty(get_item_cumulative(project, item.id, period.number - 1))
-        else:
-            cumulative_qty = Decimal("0")
-        percent_executed = Decimal("0")
-        if quantity_contracted > 0:
-            percent_executed = (cumulative_qty / quantity_contracted).quantize(QTY_Q, rounding=ROUND_HALF_UP)
-
-        target_sheet.cell(row=row, column=1).value = contract_sheet.cell(row=row, column=1).value
-        target_sheet.cell(row=row, column=2).value = item_code
-        target_sheet.cell(row=row, column=3).value = description
-        target_sheet.cell(row=row, column=4).value = quantity_contracted
-        target_sheet.cell(row=row, column=5).value = _q_money(quantity_contracted * unit_total)
-        target_sheet.cell(row=row, column=6).value = _q_qty(max(quantity_contracted - cumulative_qty, Decimal("0")))
-        target_sheet.cell(row=row, column=7).value = executed_qty
-        target_sheet.cell(row=row, column=8).value = percent_executed
-        target_sheet.cell(row=row, column=9).value = _q_money(executed_qty * unit_total)
-
-    items_filled_count = 0
-    for eap_code, progress in contracted_progress.items():
-        if progress["quantity"] <= 0:
-            continue
-        if eap_code not in row_by_eap:
-            missing_eap.append(eap_code)
-            continue
-        items_filled_count += 1
+    items_filled_count, missing_eap, cells_written = _write_measured_contract_progress_rows(
+        target_sheet,
+        columns,
+        row_by_eap,
+        contracted_progress,
+        capacity_end,
+    )
 
     summary = {
         "measurement_number": period.number,
@@ -414,6 +496,7 @@ def update_sienge_sheet_for_period(workbook, project, period):
         "missing_eap_count": len(set(missing_eap)),
         "missing_eap_list": sorted(set(missing_eap)),
         "sheet_name_used": target_sheet.title,
+        "measurement_cells_written": cells_written,
     }
     return summary, extra_entries, excess_entries
 
@@ -584,8 +667,19 @@ def _load_template_workbook():
     return load_workbook(template_path)
 
 
-def _generate_workbook_for_periods(*, project, periods: list[MeasurementPeriod]):
-    workbook = _load_template_workbook()
+def _load_base_workbook(base_workbook_path: Path | None = None):
+    if base_workbook_path is not None and base_workbook_path.exists():
+        return load_workbook(base_workbook_path)
+    return _load_template_workbook()
+
+
+def _generate_workbook_for_periods(
+    *,
+    project,
+    periods: list[MeasurementPeriod],
+    base_workbook_path: Path | None = None,
+):
+    workbook = _load_base_workbook(base_workbook_path)
     _ensure_workbook_calculates(workbook)
     _set_project_metadata(workbook, project)
 
@@ -692,7 +786,11 @@ def generate_sienge_master(project_id: int):
     output_path, relative_file_path = _build_output_path(project_id=project.id, filename=filename)
 
     try:
-        workbook, summary_json = _generate_workbook_for_periods(project=project, periods=periods)
+        workbook, summary_json = _generate_workbook_for_periods(
+            project=project,
+            periods=periods,
+            base_workbook_path=output_path,
+        )
         workbook.save(output_path)
         export_record = _create_export_record(
             project=project,
