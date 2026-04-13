@@ -21,6 +21,7 @@ class BudgetItem(models.Model):
     qty_contracted = models.DecimalField(max_digits=14, decimal_places=3)
     pu_material = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0"))
     pu_labor = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0"))
+    discipline = models.CharField(max_length=100, blank=True, default="")
     is_active = models.BooleanField(default=True)
 
     class Meta:
