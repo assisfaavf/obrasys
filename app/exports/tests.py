@@ -556,6 +556,62 @@ class SiengeExportServiceTests(TestCase):
                 Decimal("7.000"),
             )
 
+    def test_generate_sienge_master_reuses_existing_file(self):
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="2.2.1",
+            description="Revestimento",
+            unit=self.unit,
+            qty_contracted=Decimal("20"),
+            pu_material=Decimal("6"),
+            pu_labor=Decimal("4"),
+        )
+        period1 = self._create_period(1, date(2026, 1, 1))
+        MeasurementLine.objects.create(
+            period=period1,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("4"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-master-reuse-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=4)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                first_export_record, first_output_path = generate_sienge_master(self.project.id)
+
+                workbook = load_workbook(first_output_path)
+                manual_sheet = workbook.create_sheet("Ajustes Manuais")
+                manual_sheet["A1"] = "preservar"
+                workbook.save(first_output_path)
+
+                period2 = self._create_period(2, date(2026, 2, 1))
+                MeasurementLine.objects.create(
+                    period=period2,
+                    line_kind=MeasurementLineKind.CONTRACTED,
+                    item=item,
+                    qty_period=Decimal("3"),
+                )
+                second_export_record, second_output_path = generate_sienge_master(self.project.id)
+
+            self.assertEqual(first_export_record.status, ExportStatus.OK)
+            self.assertEqual(second_export_record.status, ExportStatus.OK)
+            self.assertEqual(first_output_path, second_output_path)
+
+            workbook = load_workbook(second_output_path)
+            self.assertIn("Ajustes Manuais", workbook.sheetnames)
+            self.assertEqual(workbook["Ajustes Manuais"]["A1"].value, "preservar")
+            self.assertEqual(Decimal(str(workbook["Medição 02"]["G6"].value)), Decimal("3.000"))
+
     def test_generate_sienge_snapshot_clones_measurement_sheet_above_12(self):
         item = BudgetItem.objects.create(
             project=self.project,

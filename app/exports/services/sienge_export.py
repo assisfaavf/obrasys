@@ -584,8 +584,19 @@ def _load_template_workbook():
     return load_workbook(template_path)
 
 
-def _generate_workbook_for_periods(*, project, periods: list[MeasurementPeriod]):
-    workbook = _load_template_workbook()
+def _load_base_workbook(base_workbook_path: Path | None = None):
+    if base_workbook_path is not None and base_workbook_path.exists():
+        return load_workbook(base_workbook_path)
+    return _load_template_workbook()
+
+
+def _generate_workbook_for_periods(
+    *,
+    project,
+    periods: list[MeasurementPeriod],
+    base_workbook_path: Path | None = None,
+):
+    workbook = _load_base_workbook(base_workbook_path)
     _ensure_workbook_calculates(workbook)
     _set_project_metadata(workbook, project)
 
@@ -692,7 +703,11 @@ def generate_sienge_master(project_id: int):
     output_path, relative_file_path = _build_output_path(project_id=project.id, filename=filename)
 
     try:
-        workbook, summary_json = _generate_workbook_for_periods(project=project, periods=periods)
+        workbook, summary_json = _generate_workbook_for_periods(
+            project=project,
+            periods=periods,
+            base_workbook_path=output_path,
+        )
         workbook.save(output_path)
         export_record = _create_export_record(
             project=project,
