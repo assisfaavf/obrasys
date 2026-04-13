@@ -1,9 +1,10 @@
 ﻿from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.forms.models import inlineformset_factory
 from django.test import TestCase
 
-from catalog.forms import BudgetItemAdditionalMaterialForm
+from catalog.forms import BudgetItemAdditionalMaterialForm, BudgetItemAdditionalMaterialInlineFormSet
 from catalog.models import BudgetImportMode, BudgetItem, BudgetItemAdditionalMaterial, Discipline, Unit
 from catalog.services.budget_import import apply_import_job, create_preview_job, parse_decimal
 from core.models import Client, Project
@@ -214,3 +215,20 @@ class BudgetItemAdditionalMaterialTests(TestCase):
         self.assertIn(self.same_project_item, form.fields["additional_item"].queryset)
         self.assertNotIn(self.parent_item, form.fields["additional_item"].queryset)
         self.assertNotIn(self.other_project_item, form.fields["additional_item"].queryset)
+
+    def test_additional_material_inline_empty_form_keeps_project_limited_queryset(self):
+        formset_class = inlineformset_factory(
+            BudgetItem,
+            BudgetItemAdditionalMaterial,
+            fk_name="parent_item",
+            form=BudgetItemAdditionalMaterialForm,
+            formset=BudgetItemAdditionalMaterialInlineFormSet,
+            fields=("additional_item", "quantity_per_unit", "note", "is_active"),
+            extra=1,
+        )
+        formset = formset_class(instance=self.parent_item)
+
+        queryset = formset.empty_form.fields["additional_item"].queryset
+        self.assertIn(self.same_project_item, queryset)
+        self.assertNotIn(self.parent_item, queryset)
+        self.assertNotIn(self.other_project_item, queryset)

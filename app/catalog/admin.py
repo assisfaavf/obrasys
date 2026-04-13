@@ -7,7 +7,11 @@ from django.shortcuts import get_object_or_404, render
 from django.urls import path, reverse
 from django.utils.html import format_html
 
-from catalog.forms import BudgetImportUploadForm, BudgetItemAdditionalMaterialForm
+from catalog.forms import (
+    BudgetImportUploadForm,
+    BudgetItemAdditionalMaterialForm,
+    BudgetItemAdditionalMaterialInlineFormSet,
+)
 from catalog.models import (
     BudgetImportJob,
     BudgetImportJobStatus,
@@ -22,19 +26,10 @@ from catalog.services.budget_import import apply_import_job, create_preview_job
 class BudgetItemAdditionalMaterialInline(admin.TabularInline):
     model = BudgetItemAdditionalMaterial
     form = BudgetItemAdditionalMaterialForm
+    formset = BudgetItemAdditionalMaterialInlineFormSet
     fk_name = "parent_item"
     extra = 1
     fields = ("additional_item", "quantity_per_unit", "note", "is_active")
-
-    def get_formset(self, request, obj=None, **kwargs):
-        formset = super().get_formset(request, obj, **kwargs)
-
-        class ProjectScopedAdditionalMaterialFormSet(formset):
-            def _construct_form(self, i, **form_kwargs):
-                form_kwargs["parent_item"] = obj
-                return super()._construct_form(i, **form_kwargs)
-
-        return ProjectScopedAdditionalMaterialFormSet
 
 
 @admin.register(Unit)

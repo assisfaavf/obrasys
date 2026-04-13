@@ -1,5 +1,6 @@
 from django import forms
 from django.core.exceptions import ValidationError
+from django.forms.models import BaseInlineFormSet
 
 from catalog.models import BudgetImportMode, BudgetItem, BudgetItemAdditionalMaterial
 from core.models import Project
@@ -56,3 +57,10 @@ class BudgetItemAdditionalMaterialForm(forms.ModelForm):
             raise ValidationError("Os materiais adicionais devem pertencer ao mesmo projeto.")
 
         return cleaned_data
+
+
+class BudgetItemAdditionalMaterialInlineFormSet(BaseInlineFormSet):
+    def get_form_kwargs(self, index):
+        kwargs = super().get_form_kwargs(index)
+        kwargs["parent_item"] = self.instance
+        return kwargs
