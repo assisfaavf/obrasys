@@ -1,17 +1,26 @@
 from datetime import date
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from billing.forms import MeasurementPeriodForm
-from billing.models import FinancialStatus, MeasurementLine, MeasurementPeriod, MeasurementSettlement
+from billing.models import (
+    FinancialStatus,
+    MeasurementLine,
+    MeasurementPeriod,
+    MeasurementSettlement,
+    MeasurementWorkflowHistory,
+    WorkflowStatus,
+)
 from billing.services.measurement_calc import (
     finalize_period,
     get_item_cumulative,
     split_contracted_and_excess,
     update_financial_status,
 )
+from billing.services.workflow import transition_measurement_status
 from catalog.models import BudgetItem, Unit
 from core.models import Client, Project
 from pricing.models import PriceIndex, PriceIndexValue, ProjectPriceAdjustment
@@ -101,6 +110,9 @@ class MeasurementCalcTests(TestCase):
         self.assertEqual(finalized.total_total_snapshot, Decimal("30.00"))
         self.assertEqual(finalized.total_indexed_snapshot, Decimal("30.00"))
         self.assertEqual(finalized.index_factor_snapshot, Decimal("1.000000"))
+        history = MeasurementWorkflowHistory.objects.get(period=finalized)
+        self.assertEqual(history.from_status, WorkflowStatus.DRAFT)
+        self.assertEqual(history.to_status, WorkflowStatus.FINALIZED)
 
     def test_finalize_period_with_incc_adjustment(self):
         period = self._create_period(1, date(2026, 2, 1))
@@ -268,3 +280,142 @@ class MeasurementPeriodFormTests(TestCase):
 
         self.assertTrue(form.is_valid(), form.errors.as_text())
         self.assertEqual(form.cleaned_data["ref_month"], date(2026, 4, 1))
+
+
+class MeasurementWorkflowServiceTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_superuser(
+            username="workflow-admin",
+            email="workflow@example.com",
+            password="test",
+        )
+        self.client_obj = Client.objects.create(name="Cliente Workflow")
+        self.project = Project.objects.create(name="Projeto Workflow", client=self.client_obj)
+
+    def _create_period(self, number: int, status: str) -> MeasurementPeriod:
+        return MeasurementPeriod.objects.create(
+            project=self.project,
+            number=number,
+            ref_month=date(2026, number, 1),
+            start_date=date(2026, number, 1),
+            end_date=date(2026, number, 28),
+            workflow_status=status,
+        )
+
+    def _transition(self, from_status: str, to_status: str, note: str = "obs") -> MeasurementPeriod:
+        period = self._create_period(1, from_status)
+        updated = transition_measurement_status(period, to_status, user=self.user, note=note)
+        updated.refresh_from_db()
+        return updated
+
+    def test_finalized_to_sent(self):
+        period = self._transition(WorkflowStatus.FINALIZED, WorkflowStatus.SENT, note="Enviado ao cliente")
+
+        self.assertEqual(period.workflow_status, WorkflowStatus.SENT)
+        self.assertIsNotNone(period.sent_at)
+        self.assertEqual(period.sent_note, "Enviado ao cliente")
+
+    def test_sent_to_in_review(self):
+        period = self._transition(WorkflowStatus.SENT, WorkflowStatus.IN_REVIEW, note="Em conferencia")
+
+        self.assertEqual(period.workflow_status, WorkflowStatus.IN_REVIEW)
+        self.assertIsNotNone(period.in_review_at)
+        self.assertEqual(period.review_note, "Em conferencia")
+
+    def test_in_review_to_authorized(self):
+        period = self._transition(WorkflowStatus.IN_REVIEW, WorkflowStatus.AUTHORIZED, note="Aprovado")
+
+        self.assertEqual(period.workflow_status, WorkflowStatus.AUTHORIZED)
+        self.assertIsNotNone(period.authorized_at)
+        self.assertEqual(period.authorization_note, "Aprovado")
+
+    def test_in_review_to_rejected(self):
+        period = self._transition(WorkflowStatus.IN_REVIEW, WorkflowStatus.REJECTED, note="Corrigir quantidades")
+
+        self.assertEqual(period.workflow_status, WorkflowStatus.REJECTED)
+        self.assertIsNotNone(period.rejected_at)
+        self.assertEqual(period.rejection_reason, "Corrigir quantidades")
+
+    def test_rejected_to_draft(self):
+        period = self._transition(WorkflowStatus.REJECTED, WorkflowStatus.DRAFT, note="Reabrir para ajuste")
+
+        self.assertEqual(period.workflow_status, WorkflowStatus.DRAFT)
+
+    def test_sent_to_finalized(self):
+        period = self._transition(WorkflowStatus.SENT, WorkflowStatus.FINALIZED, note="Retornar para correcao")
+
+        self.assertEqual(period.workflow_status, WorkflowStatus.FINALIZED)
+        self.assertIsNotNone(period.finalized_at)
+
+    def test_finalized_to_draft_requires_reopen_permission(self):
+        period = self._create_period(1, WorkflowStatus.FINALIZED)
+        regular_user = get_user_model().objects.create_user(username="regular", password="test")
+
+        with self.assertRaises(ValidationError):
+            transition_measurement_status(period, WorkflowStatus.DRAFT, user=regular_user, note="Sem permissao")
+
+        period.refresh_from_db()
+        self.assertEqual(period.workflow_status, WorkflowStatus.FINALIZED)
+
+        updated = transition_measurement_status(period, WorkflowStatus.DRAFT, user=self.user, note="Com permissao")
+        self.assertEqual(updated.workflow_status, WorkflowStatus.DRAFT)
+
+    def test_draft_to_cancelled(self):
+        period = self._transition(WorkflowStatus.DRAFT, WorkflowStatus.CANCELLED, note="Cancelada antes de finalizar")
+
+        self.assertEqual(period.workflow_status, WorkflowStatus.CANCELLED)
+        self.assertIsNotNone(period.cancelled_at)
+        self.assertEqual(period.cancellation_reason, "Cancelada antes de finalizar")
+
+    def test_finalized_to_cancelled(self):
+        period = self._transition(WorkflowStatus.FINALIZED, WorkflowStatus.CANCELLED, note="Cancelada finalizada")
+
+        self.assertEqual(period.workflow_status, WorkflowStatus.CANCELLED)
+        self.assertIsNotNone(period.cancelled_at)
+
+    def test_sent_to_cancelled(self):
+        period = self._transition(WorkflowStatus.SENT, WorkflowStatus.CANCELLED, note="Cancelada enviada")
+
+        self.assertEqual(period.workflow_status, WorkflowStatus.CANCELLED)
+        self.assertIsNotNone(period.cancelled_at)
+
+    def test_in_review_to_cancelled(self):
+        period = self._transition(WorkflowStatus.IN_REVIEW, WorkflowStatus.CANCELLED, note="Cancelada em avaliacao")
+
+        self.assertEqual(period.workflow_status, WorkflowStatus.CANCELLED)
+        self.assertIsNotNone(period.cancelled_at)
+
+    def test_invalid_transition_is_blocked(self):
+        period = self._create_period(1, WorkflowStatus.AUTHORIZED)
+
+        with self.assertRaises(ValidationError):
+            transition_measurement_status(period, WorkflowStatus.SENT, user=self.user, note="Nao pode")
+
+        period.refresh_from_db()
+        self.assertEqual(period.workflow_status, WorkflowStatus.AUTHORIZED)
+        self.assertFalse(MeasurementWorkflowHistory.objects.filter(period=period).exists())
+
+    def test_rejection_and_cancellation_require_reason(self):
+        reject_period = self._create_period(1, WorkflowStatus.IN_REVIEW)
+        cancel_period = self._create_period(2, WorkflowStatus.DRAFT)
+
+        with self.assertRaises(ValidationError):
+            transition_measurement_status(reject_period, WorkflowStatus.REJECTED, user=self.user, note="")
+        with self.assertRaises(ValidationError):
+            transition_measurement_status(cancel_period, WorkflowStatus.CANCELLED, user=self.user, note="")
+
+    def test_history_created_for_each_transition(self):
+        period = self._create_period(1, WorkflowStatus.FINALIZED)
+
+        transition_measurement_status(period, WorkflowStatus.SENT, user=self.user, note="Envio")
+        period.refresh_from_db()
+        transition_measurement_status(period, WorkflowStatus.IN_REVIEW, user=self.user, note="Analise")
+
+        history = list(period.workflow_history.order_by("changed_at", "id"))
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0].from_status, WorkflowStatus.FINALIZED)
+        self.assertEqual(history[0].to_status, WorkflowStatus.SENT)
+        self.assertEqual(history[0].note, "Envio")
+        self.assertEqual(history[0].changed_by, self.user)
+        self.assertEqual(history[1].from_status, WorkflowStatus.SENT)
+        self.assertEqual(history[1].to_status, WorkflowStatus.IN_REVIEW)

@@ -315,6 +315,14 @@ def finalize_period(period_id: int, user=None):
 
         update_financial_status(period.id)
         period.refresh_from_db()
+        from billing.services.workflow import record_measurement_workflow_history
+
+        record_measurement_workflow_history(
+            period,
+            WorkflowStatus.DRAFT,
+            WorkflowStatus.FINALIZED,
+            user=user,
+        )
         return period
 
 

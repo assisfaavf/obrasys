@@ -26,6 +26,144 @@
   </div>
 
   <div class="card">
+    <h2>Workflow administrativo</h2>
+    <p><strong>Status operacional atual:</strong> {{ period.workflow_status }}</p>
+    <p class="muted">
+      Finalizada: {% if period.finalized_at %}{{ period.finalized_at|date:"d/m/Y H:i" }}{% else %}-{% endif %} |
+      Enviada: {% if period.sent_at %}{{ period.sent_at|date:"d/m/Y H:i" }}{% else %}-{% endif %} |
+      Em avaliacao: {% if period.in_review_at %}{{ period.in_review_at|date:"d/m/Y H:i" }}{% else %}-{% endif %} |
+      Autorizada: {% if period.authorized_at %}{{ period.authorized_at|date:"d/m/Y H:i" }}{% else %}-{% endif %} |
+      Rejeitada: {% if period.rejected_at %}{{ period.rejected_at|date:"d/m/Y H:i" }}{% else %}-{% endif %} |
+      Cancelada: {% if period.cancelled_at %}{{ period.cancelled_at|date:"d/m/Y H:i" }}{% else %}-{% endif %}
+    </p>
+
+    {% if period.sent_note %}
+      <p><strong>Obs. envio:</strong> {{ period.sent_note }}</p>
+    {% endif %}
+    {% if period.review_note %}
+      <p><strong>Obs. avaliacao:</strong> {{ period.review_note }}</p>
+    {% endif %}
+    {% if period.authorization_note %}
+      <p><strong>Obs. autorizacao:</strong> {{ period.authorization_note }}</p>
+    {% endif %}
+    {% if period.rejection_reason %}
+      <p class="errors"><strong>Motivo da rejeicao:</strong> {{ period.rejection_reason }}</p>
+    {% endif %}
+    {% if period.cancellation_reason %}
+      <p class="errors"><strong>Motivo do cancelamento:</strong> {{ period.cancellation_reason }}</p>
+    {% endif %}
+
+    <div class="actions">
+      {% if period.workflow_status == "FINALIZED" %}
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="workflow_send">
+          <textarea name="sent_note" rows="2" placeholder="Observacao opcional de envio"></textarea>
+          <button type="submit">Marcar como enviada</button>
+        </form>
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="workflow_cancel">
+          <textarea name="cancellation_reason" rows="2" required placeholder="Motivo do cancelamento"></textarea>
+          <button type="submit">Cancelar</button>
+        </form>
+        {% if can_reopen_finalized %}
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="workflow_reopen_finalized">
+            <textarea name="workflow_note" rows="2" placeholder="Observacao opcional de reabertura"></textarea>
+            <p>
+              <label>
+                <input type="checkbox" name="confirm_reopen" required>
+                Confirmo a reabertura da medicao finalizada
+              </label>
+            </p>
+            <button type="submit">Reabrir como rascunho</button>
+          </form>
+        {% endif %}
+      {% elif period.workflow_status == "SENT" %}
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="workflow_review">
+          <textarea name="review_note" rows="2" placeholder="Observacao opcional de avaliacao"></textarea>
+          <button type="submit">Marcar como em avaliacao</button>
+        </form>
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="workflow_return_finalized">
+          <textarea name="workflow_note" rows="2" placeholder="Observacao opcional para correcao"></textarea>
+          <button type="submit">Voltar para finalizada</button>
+        </form>
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="workflow_cancel">
+          <textarea name="cancellation_reason" rows="2" required placeholder="Motivo do cancelamento"></textarea>
+          <button type="submit">Cancelar</button>
+        </form>
+      {% elif period.workflow_status == "IN_REVIEW" %}
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="workflow_authorize">
+          <textarea name="authorization_note" rows="2" placeholder="Observacao opcional de autorizacao"></textarea>
+          <button type="submit">Autorizar</button>
+        </form>
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="workflow_reject">
+          <textarea name="rejection_reason" rows="2" required placeholder="Motivo da rejeicao"></textarea>
+          <button type="submit">Rejeitar</button>
+        </form>
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="workflow_cancel">
+          <textarea name="cancellation_reason" rows="2" required placeholder="Motivo do cancelamento"></textarea>
+          <button type="submit">Cancelar</button>
+        </form>
+      {% elif period.workflow_status == "DRAFT" %}
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="workflow_cancel">
+          <textarea name="cancellation_reason" rows="2" required placeholder="Motivo do cancelamento"></textarea>
+          <button type="submit">Cancelar</button>
+        </form>
+      {% elif period.workflow_status == "REJECTED" %}
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="workflow_reopen_rejected">
+          <textarea name="workflow_note" rows="2" placeholder="Observacao opcional de reabertura"></textarea>
+          <button type="submit">Reabrir como rascunho</button>
+        </form>
+      {% endif %}
+    </div>
+
+    <h3>Historico do workflow</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>De</th>
+          <th>Para</th>
+          <th>Data/hora</th>
+          <th>Usuario</th>
+          <th>Observacao</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for history in workflow_history %}
+          <tr>
+            <td>{{ history.from_status }}</td>
+            <td>{{ history.to_status }}</td>
+            <td>{{ history.changed_at|date:"d/m/Y H:i" }}</td>
+            <td>{{ history.changed_by|default:"-" }}</td>
+            <td>{{ history.note|default:"-" }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5">Sem movimentacoes de workflow.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
     <h2>Dados da medicao</h2>
     {% if is_draft %}
       <form method="post">
