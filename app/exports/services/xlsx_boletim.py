@@ -203,7 +203,7 @@ def _discipline_sort_key(name: str) -> tuple[int, str]:
 
 def group_measurement_data_by_discipline(period: MeasurementPeriod) -> OrderedDict:
     lines = list(
-        period.lines.select_related("item", "item__unit", "location", "extra_unit").order_by("id")
+        period.lines.select_related("item", "item__unit", "item__discipline", "location", "extra_unit").order_by("id")
     )
 
     contracted_lines = [
@@ -649,7 +649,7 @@ def _render_sheet(ws: Worksheet, period: MeasurementPeriod, data: dict, context:
 def generate_xlsx_boletim(period_id: int):
     period = (
         MeasurementPeriod.objects.select_related("project", "project__client")
-        .prefetch_related("lines__item__unit", "lines__location", "lines__extra_unit")
+        .prefetch_related("lines__item__unit", "lines__item__discipline", "lines__location", "lines__extra_unit")
         .get(pk=period_id)
     )
 

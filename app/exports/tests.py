@@ -10,7 +10,7 @@ from openpyxl import Workbook, load_workbook
 
 from billing.models import MeasurementLine, MeasurementLineKind, MeasurementPeriod
 from billing.services.measurement_calc import finalize_period
-from catalog.models import BudgetItem, Unit
+from catalog.models import BudgetItem, Discipline, Unit
 from core.models import Client, Project
 from exports.models import ExportStatus, ExportType, MeasurementExport
 from exports.services.sienge_export import (
@@ -26,6 +26,7 @@ class XlsxBoletimServiceTests(TestCase):
         self.client_obj = Client.objects.create(name="Cliente Export")
         self.project = Project.objects.create(name="Projeto Export", client=self.client_obj)
         self.unit = Unit.objects.create(code="M2_EXPORT", name="Metro quadrado")
+        self.discipline_electrical = Discipline.objects.create(name="ELETRICA")
         self.item = BudgetItem.objects.create(
             project=self.project,
             eap_code="1.1",
@@ -318,6 +319,8 @@ class XlsxBoletimServiceTests(TestCase):
             self.assertEqual(overflow_row[overflow_eap_idx + 5], "Aprovacao tecnica")
 
     def test_group_measurement_data_by_discipline(self):
+        electrical = Discipline.objects.create(name="ELETRICA TESTE")
+        hydraulic = Discipline.objects.create(name="HIDROSSANITARIA")
         electrical_item = BudgetItem.objects.create(
             project=self.project,
             eap_code="2.1",
@@ -326,7 +329,7 @@ class XlsxBoletimServiceTests(TestCase):
             qty_contracted=Decimal("100"),
             pu_material=Decimal("10"),
             pu_labor=Decimal("5"),
-            discipline="ELETRICA",
+            discipline=electrical,
         )
         hydraulic_item = BudgetItem.objects.create(
             project=self.project,
@@ -336,7 +339,7 @@ class XlsxBoletimServiceTests(TestCase):
             qty_contracted=Decimal("100"),
             pu_material=Decimal("8"),
             pu_labor=Decimal("4"),
-            discipline="HIDROSSANITARIA",
+            discipline=hydraulic,
         )
         period = MeasurementPeriod.objects.create(
             project=self.project,
@@ -360,8 +363,8 @@ class XlsxBoletimServiceTests(TestCase):
 
         grouped = group_measurement_data_by_discipline(period)
 
-        self.assertEqual(list(grouped.keys()), ["ELETRICA", "HIDROSSANITARIA"])
-        self.assertEqual(grouped["ELETRICA"]["contracted"][0][0], "2.1")
+        self.assertEqual(list(grouped.keys()), ["ELETRICA TESTE", "HIDROSSANITARIA"])
+        self.assertEqual(grouped["ELETRICA TESTE"]["contracted"][0][0], "2.1")
         self.assertEqual(grouped["HIDROSSANITARIA"]["contracted"][0][0], "3.1")
 
     def test_group_measurement_data_uses_sem_disciplina_fallback(self):
@@ -394,6 +397,7 @@ class XlsxBoletimServiceTests(TestCase):
         self.assertEqual(grouped[DEFAULT_DISCIPLINE]["contracted"][0][0], "4.1")
 
     def test_excess_grouped_by_original_item_discipline(self):
+        discipline = Discipline.objects.create(name="ESTRUTURAL")
         item = BudgetItem.objects.create(
             project=self.project,
             eap_code="5.1",
@@ -402,7 +406,7 @@ class XlsxBoletimServiceTests(TestCase):
             qty_contracted=Decimal("10"),
             pu_material=Decimal("10"),
             pu_labor=Decimal("5"),
-            discipline="ESTRUTURAL",
+            discipline=discipline,
         )
         period = MeasurementPeriod.objects.create(
             project=self.project,
@@ -427,7 +431,7 @@ class XlsxBoletimServiceTests(TestCase):
         self.assertEqual(grouped["ESTRUTURAL"]["overflow"][0][5], "Necessario em campo")
 
     def test_generate_xlsx_boletim_renders_discipline_blocks(self):
-        self.item.discipline = "ELETRICA"
+        self.item.discipline = self.discipline_electrical
         self.item.save(update_fields=["discipline"])
 
         with tempfile.TemporaryDirectory(prefix="xlsx-discipline-block-") as tmp_dir:
