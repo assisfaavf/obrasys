@@ -26,4 +26,5 @@ urlpatterns = [
         RedirectView.as_view(url=staticfiles_storage.url("img/favicon.ico"), permanent=False),
     ),
     path("", include("billing.urls")),
+    path("", include("rdo.urls")),
 ]

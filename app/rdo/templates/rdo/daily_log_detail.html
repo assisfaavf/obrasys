@@ -1,0 +1,109 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Diario {{ daily_log.log_date|date:"d/m/Y" }}{% endblock %}
+
+{% block content %}
+  <h1>{{ project.name }} - Diario {{ daily_log.log_date|date:"d/m/Y" }}</h1>
+
+  <div class="actions">
+    <a href="{% url 'rdo:project_rdo_list' project.id %}">Voltar para RDO</a>
+    <a href="{% url 'rdo:work_order' project.id %}">Livro de Ordem</a>
+    {% if rdo_template_available %}
+      <a href="{% url 'rdo:rdo_export_xlsx' daily_log.id %}">Exportar RDO Excel</a>
+    {% else %}
+      <span class="errors">{{ rdo_template_error }}</span>
+    {% endif %}
+  </div>
+
+  <form method="post">
+    {% csrf_token %}
+
+    <div class="card">
+      <h2>Dados gerais do diario</h2>
+      {{ form.as_p }}
+    </div>
+
+    <div class="card">
+      <h2>Equipes</h2>
+      {{ team_formset.management_form }}
+      <table>
+        <thead>
+          <tr>
+            <th>Equipe</th>
+            <th>Contratada</th>
+            <th>Funcao/Servico</th>
+            <th>Qtd</th>
+            <th>Notas</th>
+            <th>Excluir</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry_form in team_formset %}
+            <tr>
+              <td>{{ entry_form.id }}{{ entry_form.team_name.errors }}{{ entry_form.team_name }}</td>
+              <td>{{ entry_form.contractor_name.errors }}{{ entry_form.contractor_name }}</td>
+              <td>{{ entry_form.role_or_service.errors }}{{ entry_form.role_or_service }}</td>
+              <td>{{ entry_form.worker_count.errors }}{{ entry_form.worker_count }}</td>
+              <td>{{ entry_form.notes.errors }}{{ entry_form.notes }}</td>
+              <td>{% if entry_form.instance.pk %}{{ entry_form.DELETE }}{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Atividades executadas</h2>
+      {{ activity_formset.management_form }}
+      <table>
+        <thead>
+          <tr>
+            <th>Descricao</th>
+            <th>Local</th>
+            <th>Disciplina</th>
+            <th>Notas</th>
+            <th>Excluir</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry_form in activity_formset %}
+            <tr>
+              <td>{{ entry_form.id }}{{ entry_form.description.errors }}{{ entry_form.description }}</td>
+              <td>{{ entry_form.location.errors }}{{ entry_form.location }}</td>
+              <td>{{ entry_form.discipline.errors }}{{ entry_form.discipline }}</td>
+              <td>{{ entry_form.notes.errors }}{{ entry_form.notes }}</td>
+              <td>{% if entry_form.instance.pk %}{{ entry_form.DELETE }}{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Ocorrencias</h2>
+      {{ occurrence_formset.management_form }}
+      <table>
+        <thead>
+          <tr>
+            <th>Tipo</th>
+            <th>Descricao</th>
+            <th>Notas</th>
+            <th>Excluir</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry_form in occurrence_formset %}
+            <tr>
+              <td>{{ entry_form.id }}{{ entry_form.occurrence_type.errors }}{{ entry_form.occurrence_type }}</td>
+              <td>{{ entry_form.description.errors }}{{ entry_form.description }}</td>
+              <td>{{ entry_form.notes.errors }}{{ entry_form.notes }}</td>
+              <td>{% if entry_form.instance.pk %}{{ entry_form.DELETE }}{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <button type="submit">Salvar diario</button>
+  </form>
+{% endblock %}

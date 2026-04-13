@@ -1,0 +1,43 @@
+{% extends "billing/base.html" %}
+
+{% block title %}RDO - {{ project.name }}{% endblock %}
+
+{% block content %}
+  <h1>RDO - {{ project.name }}</h1>
+  <p class="muted">Diario de Obras e Livro de Ordem</p>
+
+  <div class="actions">
+    <a href="{% url 'billing:project_detail' project.id %}">Voltar para obra</a>
+    <a href="{% url 'rdo:daily_log_new' project.id %}">Novo diario</a>
+    <a href="{% url 'rdo:work_order' project.id %}">Livro de Ordem</a>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Data</th>
+        <th>Responsavel</th>
+        <th>Resumo</th>
+        <th>Acoes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for daily_log in daily_logs %}
+        <tr>
+          <td>{{ daily_log.log_date|date:"d/m/Y" }}</td>
+          <td>{{ daily_log.responsible_name }}</td>
+          <td>
+            {{ daily_log.team_entries.count }} equipe(s),
+            {{ daily_log.activity_entries.count }} atividade(s),
+            {{ daily_log.occurrences.count }} ocorrencia(s)
+          </td>
+          <td><a href="{% url 'rdo:daily_log_detail' daily_log.id %}">Abrir</a></td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="4">Nenhum diario cadastrado.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

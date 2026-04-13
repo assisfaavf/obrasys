@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'pricing',
     'billing',
     'exports',
+    'rdo',
 ]
 
 MIDDLEWARE = [
