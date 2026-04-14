@@ -8,7 +8,9 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.urls import reverse
+from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl import Workbook, load_workbook
+from PIL import Image as PilImage
 
 from catalog.models import BudgetItem, Discipline, Unit
 from core.models import Client, Project, ProjectLocation
@@ -243,6 +245,9 @@ class RdoExportTests(TestCase):
         workbook.create_sheet("DiÃ¡rio de Obras")
         workbook.create_sheet("RelatÃ³rio FotogrÃ¡fico")
         workbook["RelatÃ³rio FotogrÃ¡fico"]["A1"] = "Template fotografico preservado"
+        logo_path = path.parent / "logo.png"
+        PilImage.new("RGBA", (867, 288), (0, 76, 180, 255)).save(logo_path)
+        workbook["RelatÃ³rio FotogrÃ¡fico"].add_image(ExcelImage(logo_path), "J1")
         workbook.save(path)
         return path
 
@@ -298,6 +303,10 @@ class RdoExportTests(TestCase):
             self.assertEqual(daily_sheet["A46"].value, "MAT-001")
             self.assertEqual(daily_sheet["B46"].value, "Cimento CP II - Materiais da alvenaria")
             self.assertEqual(daily_sheet["E46"].value, "8.000 - saco")
+            self.assertTrue(any(image.anchor._from.row == 1 and image.anchor._from.col == 0 for image in daily_sheet._images))
+            self.assertTrue(
+                any(image.anchor._from.row == 2 and image.anchor._from.col == 0 for image in work_order_sheet._images)
+            )
             values = [cell.value for row in daily_sheet.iter_rows() for cell in row]
             self.assertNotIn("DIÁRIO DE OBRAS", values)
             self.assertEqual(export_record.summary_json["material_entries_count"], 1)

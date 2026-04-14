@@ -1,13 +1,17 @@
-from pathlib import Path
 from copy import copy
+from io import BytesIO
+from pathlib import Path
+from zipfile import ZipFile
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.utils.text import slugify
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
+from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.worksheet.cell_range import CellRange
 from openpyxl.worksheet.worksheet import Worksheet
+from PIL import Image as PilImage
 
 from exports.models import ExportStatus, ExportType, MeasurementExport
 from rdo.models import DailyWorkLog
@@ -53,6 +57,48 @@ def _write(ws: Worksheet, row: int, col: int, value) -> None:
 def _write_pair(ws: Worksheet, row: int, label: str, value) -> None:
     _write(ws, row, 1, label)
     _write(ws, row, 2, value)
+
+
+def _template_logo_bytes(template_path: Path) -> bytes | None:
+    with ZipFile(template_path) as archive:
+        candidates = []
+        for name in archive.namelist():
+            if not name.startswith("xl/media/"):
+                continue
+            data = archive.read(name)
+            with PilImage.open(BytesIO(data)) as image:
+                width, height = image.size
+            candidates.append((width * height, name, data))
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[2]
+
+
+def _add_logo(ws: Worksheet, logo_bytes: bytes | None, anchor: str, width: int = 240) -> None:
+    if not logo_bytes:
+        return
+
+    with PilImage.open(BytesIO(logo_bytes)) as image:
+        original_width, original_height = image.size
+
+    logo = ExcelImage(BytesIO(logo_bytes))
+    logo.width = width
+    logo.height = int(width * original_height / original_width)
+    ws.add_image(logo, anchor)
+
+
+def add_template_logos(workbook, template_path: Path) -> None:
+    logo_bytes = _template_logo_bytes(template_path)
+    if not logo_bytes:
+        return
+
+    work_order_sheet = _sheet(workbook, WORK_ORDER_SHEET)
+    daily_log_sheet = _sheet(workbook, DAILY_LOG_SHEET, "Diario de Obras", "DiÃ¡rio de Obras")
+    _write(work_order_sheet, 3, 1, "")
+    _write(daily_log_sheet, 2, 1, "")
+    _add_logo(work_order_sheet, logo_bytes, "A3")
+    _add_logo(daily_log_sheet, logo_bytes, "A2")
 
 
 def _clear_row(ws: Worksheet, row: int, max_col: int = 6) -> None:
@@ -301,6 +347,7 @@ def generate_rdo_xlsx(daily_log_id: int):
 
         fill_work_order_sheet(workbook, daily_log.project)
         fill_daily_log_sheet(workbook, daily_log)
+        add_template_logos(workbook, template_path)
 
         slug_project = slugify(daily_log.project.name) or f"project-{daily_log.project_id}"
         export_dir = get_exports_dir() / str(daily_log.project_id) / "rdo"
