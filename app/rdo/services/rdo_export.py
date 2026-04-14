@@ -95,6 +95,23 @@ def _copy_single_row_merges(ws: Worksheet, source_row: int, target_row: int) -> 
                 ws.merge_cells(str(target_range))
 
 
+def _unmerge_single_row(ws: Worksheet, row: int, min_col: int = 1, max_col: int = 6) -> None:
+    for merged_range in list(ws.merged_cells.ranges):
+        if (
+            merged_range.min_row == row
+            and merged_range.max_row == row
+            and merged_range.min_col <= max_col
+            and merged_range.max_col >= min_col
+        ):
+            ws.unmerge_cells(str(merged_range))
+
+
+def _merge_row_range(ws: Worksheet, row: int, start_col: int, end_col: int) -> None:
+    merge_range = CellRange(min_row=row, max_row=row, min_col=start_col, max_col=end_col)
+    if str(merge_range) not in {str(existing) for existing in ws.merged_cells.ranges}:
+        ws.merge_cells(str(merge_range))
+
+
 def _ensure_block_rows(ws: Worksheet, start_row: int, available_rows: int, needed_rows: int, max_col: int = 6) -> int:
     extra_rows = max(0, needed_rows - available_rows)
     if not extra_rows:
@@ -187,7 +204,7 @@ def fill_daily_log_sheet(workbook, daily_log: DailyWorkLog) -> None:
 
     activity_entries = list(daily_log.activity_entries.select_related("location", "discipline"))
     occurrence_entries = list(daily_log.occurrences.all())
-    team_entries = list(daily_log.team_entries.all())
+    team_entries = list(daily_log.team_entries.select_related("location"))
     material_entries = list(daily_log.material_entries.select_related("item", "location"))
 
     offset = 0
@@ -233,12 +250,22 @@ def fill_daily_log_sheet(workbook, daily_log: DailyWorkLog) -> None:
         _write(ws, row, 1, _join_parts(entry.description, entry.notes))
         _write(ws, row, 4, entry.get_occurrence_type_display())
 
+    team_header_row = team_start - 1
+    for row in range(team_header_row, team_start + max(4, len(team_entries))):
+        _unmerge_single_row(ws, row)
+        _merge_row_range(ws, row, 4, 6)
+    _write(ws, team_header_row, 1, "Equipe")
+    _write(ws, team_header_row, 2, "Quantidade")
+    _write(ws, team_header_row, 3, "Local")
+    _write(ws, team_header_row, 4, "Atividade/Serviço executado")
+
     for row in range(team_start, team_start + max(4, len(team_entries))):
         _clear_row(ws, row)
     for row, entry in enumerate(team_entries, start=team_start):
-        _write(ws, row, 1, "")
-        _write(ws, row, 2, _join_parts(entry.team_name, entry.contractor_name, entry.role_or_service, entry.notes))
-        _write(ws, row, 5, entry.worker_count)
+        _write(ws, row, 1, entry.team_name)
+        _write(ws, row, 2, entry.worker_count)
+        _write(ws, row, 3, _text(entry.location))
+        _write(ws, row, 4, entry.activity_description)
 
     _write(ws, material_heading_row, 1, "Materiais aplicados")
     _write(ws, material_heading_row + 1, 1, "Código")
@@ -261,6 +288,7 @@ def generate_rdo_xlsx(daily_log_id: int):
             "activity_entries__location",
             "activity_entries__discipline",
             "occurrences",
+            "team_entries__location",
             "material_entries__item",
             "material_entries__location",
         )

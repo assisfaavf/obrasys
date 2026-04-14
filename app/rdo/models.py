@@ -85,9 +85,15 @@ class DailyWorkLog(models.Model):
 class DailyWorkTeamEntry(models.Model):
     daily_log = models.ForeignKey(DailyWorkLog, on_delete=models.CASCADE, related_name="team_entries")
     team_name = models.CharField(max_length=120)
-    contractor_name = models.CharField(max_length=255, blank=True)
-    role_or_service = models.CharField(max_length=255, blank=True)
-    worker_count = models.PositiveIntegerField()
+    worker_count = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    location = models.ForeignKey(
+        "core.ProjectLocation",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="daily_work_team_entries",
+    )
+    activity_description = models.TextField(default="")
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -95,6 +101,20 @@ class DailyWorkTeamEntry(models.Model):
 
     def __str__(self) -> str:
         return f"{self.team_name} ({self.worker_count})"
+
+    def clean(self):
+        super().clean()
+
+        if self.worker_count is not None and self.worker_count <= 0:
+            raise ValidationError({"worker_count": "A quantidade deve ser maior que zero."})
+
+        project_id = getattr(self.daily_log, "project_id", None)
+        if self.location_id and project_id and self.location.project_id != project_id:
+            raise ValidationError({"location": "O local deve pertencer à mesma obra do diário."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class DailyWorkActivityEntry(models.Model):

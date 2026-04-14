@@ -60,9 +60,9 @@ class DailyWorkLogAdmin(admin.ModelAdmin):
 
 @admin.register(DailyWorkTeamEntry)
 class DailyWorkTeamEntryAdmin(admin.ModelAdmin):
-    list_display = ("daily_log", "team_name", "contractor_name", "role_or_service", "worker_count")
-    list_filter = ("daily_log__project",)
-    search_fields = ("team_name", "contractor_name", "role_or_service")
+    list_display = ("daily_log", "team_name", "worker_count", "location", "activity_description")
+    list_filter = ("daily_log__project", "location")
+    search_fields = ("team_name", "activity_description", "location__code", "location__name")
 
 
 @admin.register(DailyWorkActivityEntry)

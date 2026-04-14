@@ -31,7 +31,7 @@ TeamEntryFormSet = inlineformset_factory(
     DailyWorkLog,
     DailyWorkTeamEntry,
     form=DailyWorkTeamEntryForm,
-    fields=("team_name", "contractor_name", "role_or_service", "worker_count", "notes"),
+    fields=("team_name", "worker_count", "location", "activity_description"),
     extra=1,
     can_delete=True,
 )
@@ -117,7 +117,12 @@ def daily_log_detail_view(request, daily_log_id: int):
 
     if request.method == "POST":
         form = DailyWorkLogForm(request.POST, instance=daily_log, project=project)
-        team_formset = TeamEntryFormSet(request.POST, instance=daily_log, prefix="teams")
+        team_formset = TeamEntryFormSet(
+            request.POST,
+            instance=daily_log,
+            prefix="teams",
+            form_kwargs={"project": project},
+        )
         activity_formset = ActivityEntryFormSet(
             request.POST,
             instance=daily_log,
@@ -155,7 +160,7 @@ def daily_log_detail_view(request, daily_log_id: int):
         messages.error(request, "Não foi possível salvar o diário. Confira os campos destacados e tente novamente.")
     else:
         form = DailyWorkLogForm(instance=daily_log, project=project)
-        team_formset = TeamEntryFormSet(instance=daily_log, prefix="teams")
+        team_formset = TeamEntryFormSet(instance=daily_log, prefix="teams", form_kwargs={"project": project})
         activity_formset = ActivityEntryFormSet(
             instance=daily_log,
             prefix="activities",

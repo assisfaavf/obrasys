@@ -32,10 +32,9 @@
         <thead>
           <tr>
             <th>Equipe</th>
-            <th>Contratada</th>
-            <th>Função/Serviço</th>
             <th>Quantidade</th>
-            <th>Observações</th>
+            <th>Local</th>
+            <th>Atividade/Serviço executado</th>
             <th>Excluir</th>
           </tr>
         </thead>
@@ -43,10 +42,9 @@
           {% for entry_form in team_formset %}
             <tr data-form-row data-existing="{{ entry_form.instance.pk|yesno:'true,false' }}">
               <td>{{ entry_form.id }}{{ entry_form.team_name.errors }}{{ entry_form.team_name }}</td>
-              <td>{{ entry_form.contractor_name.errors }}{{ entry_form.contractor_name }}</td>
-              <td>{{ entry_form.role_or_service.errors }}{{ entry_form.role_or_service }}</td>
               <td>{{ entry_form.worker_count.errors }}{{ entry_form.worker_count }}</td>
-              <td>{{ entry_form.notes.errors }}{{ entry_form.notes }}</td>
+              <td>{{ entry_form.location.errors }}{{ entry_form.location }}</td>
+              <td>{{ entry_form.activity_description.errors }}{{ entry_form.activity_description }}</td>
               <td>
                 <span style="display: none;">{{ entry_form.DELETE }}</span>
                 <button type="button" data-remove-row>Excluir</button>
@@ -59,10 +57,9 @@
       <script type="text/template" id="teams-empty-form">
         <tr data-form-row data-existing="false">
           <td>{{ team_formset.empty_form.id }}{{ team_formset.empty_form.team_name.errors }}{{ team_formset.empty_form.team_name }}</td>
-          <td>{{ team_formset.empty_form.contractor_name.errors }}{{ team_formset.empty_form.contractor_name }}</td>
-          <td>{{ team_formset.empty_form.role_or_service.errors }}{{ team_formset.empty_form.role_or_service }}</td>
           <td>{{ team_formset.empty_form.worker_count.errors }}{{ team_formset.empty_form.worker_count }}</td>
-          <td>{{ team_formset.empty_form.notes.errors }}{{ team_formset.empty_form.notes }}</td>
+          <td>{{ team_formset.empty_form.location.errors }}{{ team_formset.empty_form.location }}</td>
+          <td>{{ team_formset.empty_form.activity_description.errors }}{{ team_formset.empty_form.activity_description }}</td>
           <td>
             <span style="display: none;">{{ team_formset.empty_form.DELETE }}</span>
             <button type="button" data-remove-row>Excluir</button>

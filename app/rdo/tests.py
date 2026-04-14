@@ -104,9 +104,9 @@ class RdoModelTests(TestCase):
         team = DailyWorkTeamEntry.objects.create(
             daily_log=daily_log,
             team_name="Equipe A",
-            contractor_name="Contratada",
-            role_or_service="Instalacao",
             worker_count=4,
+            location=location,
+            activity_description="Instalacao de eletrodutos",
         )
         activity = DailyWorkActivityEntry.objects.create(
             daily_log=daily_log,
@@ -121,6 +121,8 @@ class RdoModelTests(TestCase):
         )
 
         self.assertEqual(team.worker_count, 4)
+        self.assertEqual(team.location, location)
+        self.assertEqual(team.activity_description, "Instalacao de eletrodutos")
         self.assertEqual(activity.location, location)
         self.assertEqual(activity.discipline, discipline)
         self.assertEqual(occurrence.occurrence_type, OccurrenceType.INSPECAO)
@@ -199,12 +201,17 @@ class RdoExportTests(TestCase):
             contract_number="CT-01",
             contract_value=Decimal("200000.00"),
         )
+        self.location = ProjectLocation.objects.create(
+            project=self.project,
+            code="P1",
+            name="Pavimento 1",
+        )
         DailyWorkTeamEntry.objects.create(
             daily_log=self.daily_log,
             team_name="Equipe Civil",
-            contractor_name="Construtora RDO",
-            role_or_service="Alvenaria",
             worker_count=5,
+            location=self.location,
+            activity_description="Execucao de alvenaria",
         )
         DailyWorkActivityEntry.objects.create(
             daily_log=self.daily_log,
@@ -279,8 +286,14 @@ class RdoExportTests(TestCase):
             self.assertEqual(daily_sheet["A23"].value, "Execucao de alvenaria")
             self.assertEqual(daily_sheet["A32"].value, "Visita tecnica")
             self.assertEqual(daily_sheet["D32"].value, "Visita")
-            self.assertEqual(daily_sheet["B39"].value, "Equipe Civil - Construtora RDO - Alvenaria")
-            self.assertEqual(daily_sheet["E39"].value, 5)
+            self.assertEqual(daily_sheet["A38"].value, "Equipe")
+            self.assertEqual(daily_sheet["B38"].value, "Quantidade")
+            self.assertEqual(daily_sheet["C38"].value, "Local")
+            self.assertEqual(daily_sheet["D38"].value, "Atividade/Serviço executado")
+            self.assertEqual(daily_sheet["A39"].value, "Equipe Civil")
+            self.assertEqual(daily_sheet["B39"].value, 5)
+            self.assertEqual(daily_sheet["C39"].value, "P1")
+            self.assertEqual(daily_sheet["D39"].value, "Execucao de alvenaria")
             self.assertEqual(daily_sheet["A44"].value, "Materiais aplicados")
             self.assertEqual(daily_sheet["A46"].value, "MAT-001")
             self.assertEqual(daily_sheet["B46"].value, "Cimento CP II - Materiais da alvenaria")
@@ -354,8 +367,11 @@ class RdoViewTests(TestCase):
         self.assertContains(response, "Dados gerais do diário")
         self.assertContains(response, "Responsável")
         self.assertContains(response, "Atividades executadas")
+        self.assertContains(response, "Atividade/Serviço executado")
         self.assertContains(response, "Ocorrências")
         self.assertContains(response, "Materiais aplicados")
+        self.assertNotContains(response, "Contratada")
+        self.assertNotContains(response, "Função/Serviço")
         self.assertContains(response, "Adicionar linha", count=4)
         self.assertEqual(response.context["team_formset"].total_form_count(), 1)
         self.assertEqual(response.context["activity_formset"].total_form_count(), 1)
@@ -384,15 +400,13 @@ class RdoViewTests(TestCase):
             "teams-MIN_NUM_FORMS": "0",
             "teams-MAX_NUM_FORMS": "1000",
             "teams-0-team_name": "Equipe Civil",
-            "teams-0-contractor_name": "Construtora",
-            "teams-0-role_or_service": "Alvenaria",
             "teams-0-worker_count": "4",
-            "teams-0-notes": "",
+            "teams-0-location": str(self.location.id),
+            "teams-0-activity_description": "Alvenaria",
             "teams-1-team_name": "Equipe Instalacoes",
-            "teams-1-contractor_name": "Instaladora",
-            "teams-1-role_or_service": "Hidraulica",
             "teams-1-worker_count": "2",
-            "teams-1-notes": "",
+            "teams-1-location": "",
+            "teams-1-activity_description": "Hidraulica",
             "activities-TOTAL_FORMS": "1",
             "activities-INITIAL_FORMS": "0",
             "activities-MIN_NUM_FORMS": "0",
@@ -425,6 +439,10 @@ class RdoViewTests(TestCase):
         self.daily_log.refresh_from_db()
         self.assertEqual(self.daily_log.responsible_name, "Mestre atualizado")
         self.assertEqual(self.daily_log.team_entries.count(), 2)
+        team = self.daily_log.team_entries.get(team_name="Equipe Civil")
+        self.assertEqual(team.worker_count, 4)
+        self.assertEqual(team.location, self.location)
+        self.assertEqual(team.activity_description, "Alvenaria")
         self.assertEqual(self.daily_log.activity_entries.count(), 1)
         self.assertEqual(self.daily_log.occurrences.count(), 1)
         material = self.daily_log.material_entries.get()

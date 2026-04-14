@@ -115,17 +115,33 @@ class DailyWorkLogForm(forms.ModelForm):
 class DailyWorkTeamEntryForm(forms.ModelForm):
     class Meta:
         model = DailyWorkTeamEntry
-        fields = ("team_name", "contractor_name", "role_or_service", "worker_count", "notes")
+        fields = ("team_name", "worker_count", "location", "activity_description")
         widgets = {
-            "notes": forms.Textarea(attrs={"rows": 2}),
+            "activity_description": forms.Textarea(attrs={"rows": 2}),
         }
         labels = {
             "team_name": "Equipe",
-            "contractor_name": "Contratada",
-            "role_or_service": "Função/Serviço",
             "worker_count": "Quantidade",
-            "notes": "Observações",
+            "location": "Local",
+            "activity_description": "Atividade/Serviço executado",
         }
+
+    def __init__(self, *args, project=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        project = project or getattr(getattr(self.instance, "daily_log", None), "project", None)
+        if project:
+            self.fields["location"].queryset = ProjectLocation.objects.filter(
+                project=project,
+                is_active=True,
+            ).order_by("order_index", "code")
+        else:
+            self.fields["location"].queryset = ProjectLocation.objects.none()
+
+    def clean_worker_count(self):
+        worker_count = self.cleaned_data.get("worker_count")
+        if worker_count is not None and worker_count <= 0:
+            raise ValidationError("A quantidade deve ser maior que zero.")
+        return worker_count
 
 
 class DailyWorkActivityEntryForm(forms.ModelForm):
