@@ -1,10 +1,12 @@
 from pathlib import Path
+from copy import copy
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.utils.text import slugify
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
+from openpyxl.worksheet.cell_range import CellRange
 from openpyxl.worksheet.worksheet import Worksheet
 
 from exports.models import ExportStatus, ExportType, MeasurementExport
@@ -53,6 +55,65 @@ def _write_pair(ws: Worksheet, row: int, label: str, value) -> None:
     _write(ws, row, 2, value)
 
 
+def _clear_row(ws: Worksheet, row: int, max_col: int = 6) -> None:
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=row, column=col)
+        if not isinstance(cell, MergedCell):
+            cell.value = None
+
+
+def _copy_row_format(ws: Worksheet, source_row: int, target_row: int, max_col: int = 6) -> None:
+    ws.row_dimensions[target_row].height = ws.row_dimensions[source_row].height
+    for col in range(1, max_col + 1):
+        source = ws.cell(row=source_row, column=col)
+        target = ws.cell(row=target_row, column=col)
+        if source.has_style:
+            target._style = copy(source._style)
+        if source.number_format:
+            target.number_format = source.number_format
+        if source.alignment:
+            target.alignment = copy(source.alignment)
+        if source.border:
+            target.border = copy(source.border)
+        if source.fill:
+            target.fill = copy(source.fill)
+        if source.font:
+            target.font = copy(source.font)
+
+
+def _copy_single_row_merges(ws: Worksheet, source_row: int, target_row: int) -> None:
+    ranges = list(ws.merged_cells.ranges)
+    for merged_range in ranges:
+        if merged_range.min_row == source_row and merged_range.max_row == source_row:
+            target_range = CellRange(
+                min_col=merged_range.min_col,
+                max_col=merged_range.max_col,
+                min_row=target_row,
+                max_row=target_row,
+            )
+            if str(target_range) not in {str(existing) for existing in ws.merged_cells.ranges}:
+                ws.merge_cells(str(target_range))
+
+
+def _ensure_block_rows(ws: Worksheet, start_row: int, available_rows: int, needed_rows: int, max_col: int = 6) -> int:
+    extra_rows = max(0, needed_rows - available_rows)
+    if not extra_rows:
+        return 0
+
+    insert_at = start_row + available_rows
+    ws.insert_rows(insert_at, extra_rows)
+    source_row = insert_at - 1
+    for row in range(insert_at, insert_at + extra_rows):
+        _copy_row_format(ws, source_row, row, max_col=max_col)
+        _copy_single_row_merges(ws, source_row, row)
+        _clear_row(ws, row, max_col=max_col)
+    return extra_rows
+
+
+def _join_parts(*parts) -> str:
+    return " - ".join(part for part in (_text(part) for part in parts) if part)
+
+
 def fill_work_order_sheet(workbook, project) -> None:
     ws = _sheet(workbook, WORK_ORDER_SHEET)
     try:
@@ -60,25 +121,20 @@ def fill_work_order_sheet(workbook, project) -> None:
     except ObjectDoesNotExist:
         work_order = None
 
-    _write(ws, 1, 1, "LIVRO DE ORDEM")
-    _write_pair(ws, 3, "Obra", project.name)
-    _write_pair(ws, 4, "Cliente", getattr(project.client, "name", ""))
-    _write_pair(ws, 5, "Endereço", _text(getattr(work_order, "address_snapshot", "")) or project.address)
-    _write_pair(ws, 6, "ART", getattr(work_order, "art_number", ""))
-    _write_pair(ws, 7, "Contrato", getattr(work_order, "contract_number", ""))
-    _write_pair(ws, 8, "Valor do contrato", getattr(work_order, "contract_value", ""))
-    _write_pair(ws, 9, "Contratada", getattr(work_order, "contractor_name", ""))
-    _write_pair(ws, 10, "Documento contratada", getattr(work_order, "contractor_document", ""))
-    _write_pair(ws, 11, "Responsável técnico", getattr(work_order, "technical_manager_name", ""))
-    _write_pair(ws, 12, "CREA/CAU", getattr(work_order, "technical_manager_crea", ""))
-    _write_pair(ws, 13, "Início da obra", _date_text(getattr(work_order, "work_start_date", None) or project.start_date))
-    _write_pair(
-        ws,
-        14,
-        "Previsão de término",
-        _date_text(getattr(work_order, "expected_end_date", None) or project.planned_end_date),
-    )
-    _write_pair(ws, 15, "Observações", getattr(work_order, "additional_notes", ""))
+    _write(ws, 4, 3, getattr(work_order, "art_number", ""))
+    _write(ws, 10, 2, getattr(work_order, "technical_manager_name", ""))
+    _write(ws, 11, 4, getattr(work_order, "technical_manager_crea", ""))
+    _write(ws, 19, 2, getattr(project.client, "name", ""))
+    _write(ws, 20, 4, getattr(project.client, "document", ""))
+    _write(ws, 21, 2, getattr(work_order, "contractor_name", ""))
+    _write(ws, 24, 4, getattr(work_order, "contractor_document", ""))
+    _write(ws, 27, 2, _text(getattr(work_order, "address_snapshot", "")) or project.address)
+    _write(ws, 32, 2, getattr(work_order, "additional_notes", ""))
+    _write(ws, 33, 2, getattr(work_order, "contract_number", ""))
+    _write(ws, 34, 2, getattr(work_order, "work_start_date", None) or project.start_date)
+    _write(ws, 34, 4, getattr(work_order, "expected_end_date", None) or project.planned_end_date)
+    _write(ws, 37, 2, getattr(work_order, "technical_manager_name", ""))
+    _write(ws, 38, 2, getattr(project.client, "name", ""))
 
 
 def _weather_display(daily_log: DailyWorkLog, field_name: str) -> str:
@@ -88,75 +144,112 @@ def _weather_display(daily_log: DailyWorkLog, field_name: str) -> str:
     return dict(daily_log._meta.get_field(field_name).choices).get(value, value)
 
 
+def _weather_column(value: str) -> int | None:
+    return {
+        "CLEAR": 2,
+        "CLOUDY": 3,
+        "WINDY": 3,
+        "RAINY": 4,
+        "STOPPED": 5,
+    }.get(value)
+
+
+def _weekday_name(value) -> str:
+    if not value:
+        return ""
+    weekdays = (
+        "segunda-feira",
+        "terça-feira",
+        "quarta-feira",
+        "quinta-feira",
+        "sexta-feira",
+        "sábado",
+        "domingo",
+    )
+    return weekdays[value.weekday()]
+
+
+def _entry_material_description(entry) -> str:
+    if entry.item_id:
+        return entry.description_snapshot or entry.item.description
+    return entry.description_snapshot
+
+
+def _project_work_order(project):
+    try:
+        return project.work_order_info
+    except ObjectDoesNotExist:
+        return None
+
+
 def fill_daily_log_sheet(workbook, daily_log: DailyWorkLog) -> None:
     ws = _sheet(workbook, DAILY_LOG_SHEET, "Diario de Obras", "DiÃ¡rio de Obras")
 
-    _write(ws, 1, 1, "DIÁRIO DE OBRAS")
-    _write_pair(ws, 3, "Obra", daily_log.project.name)
-    _write_pair(ws, 4, "Data", _date_text(daily_log.log_date))
-    _write_pair(ws, 5, "Responsável", daily_log.responsible_name)
-    _write_pair(ws, 6, "Tempo manhã", _weather_display(daily_log, "weather_morning"))
-    _write_pair(ws, 7, "Tempo tarde", _weather_display(daily_log, "weather_afternoon"))
-    _write_pair(ws, 8, "Tempo noite", _weather_display(daily_log, "weather_night"))
-    _write_pair(ws, 9, "Observações do dia", daily_log.notes)
-    _write_pair(ws, 10, "Observação geral", daily_log.general_observation)
-    _write_pair(ws, 11, "Motivo de interrupção", daily_log.interruption_reason)
+    activity_entries = list(daily_log.activity_entries.select_related("location", "discipline"))
+    occurrence_entries = list(daily_log.occurrences.all())
+    team_entries = list(daily_log.team_entries.all())
+    material_entries = list(daily_log.material_entries.select_related("item", "location"))
 
-    row = 13
-    _write(ws, row, 1, "EQUIPES")
-    row += 1
-    for col, label in enumerate(("Equipe", "Contratada", "Função/Serviço", "Quantidade", "Observações"), start=1):
-        _write(ws, row, col, label)
-    row += 1
-    for entry in daily_log.team_entries.all():
-        _write(ws, row, 1, entry.team_name)
-        _write(ws, row, 2, entry.contractor_name)
-        _write(ws, row, 3, entry.role_or_service)
-        _write(ws, row, 4, entry.worker_count)
-        _write(ws, row, 5, entry.notes)
-        row += 1
+    offset = 0
+    activity_start = 23
+    offset += _ensure_block_rows(ws, activity_start + offset, 6, len(activity_entries))
+    occurrence_start = 32 + offset
+    offset += _ensure_block_rows(ws, occurrence_start, 4, len(occurrence_entries))
+    team_start = 39 + offset
+    offset += _ensure_block_rows(ws, team_start, 4, len(team_entries))
+    material_heading_row = 44 + offset
+    material_start = 46 + offset
+    _ensure_block_rows(ws, material_start, 5, len(material_entries))
 
-    row += 1
-    _write(ws, row, 1, "ATIVIDADES EXECUTADAS")
-    row += 1
-    for col, label in enumerate(("Descrição", "Local", "Disciplina", "Observações"), start=1):
-        _write(ws, row, col, label)
-    row += 1
-    for entry in daily_log.activity_entries.select_related("location", "discipline"):
+    project = daily_log.project
+    work_order = _project_work_order(project)
+    _write(ws, 2, 4, project.name)
+    _write(ws, 5, 4, project.address)
+    _write(ws, 7, 4, project.start_date)
+    _write(ws, 7, 6, project.planned_end_date)
+    _write(ws, 9, 2, getattr(work_order, "technical_manager_name", ""))
+    _write(ws, 10, 2, daily_log.log_date)
+    _write(ws, 10, 4, _weekday_name(daily_log.log_date))
+    _write(ws, 11, 2, daily_log.responsible_name)
+    _write(ws, 12, 3, _join_parts(daily_log.notes, daily_log.general_observation, daily_log.interruption_reason))
+
+    for weather_row, field_name in ((17, "weather_morning"), (18, "weather_afternoon"), (19, "weather_night")):
+        for col in range(2, 6):
+            _write(ws, weather_row, col, "")
+        weather_col = _weather_column(getattr(daily_log, field_name))
+        if weather_col:
+            _write(ws, weather_row, weather_col, "x")
+
+    for row in range(activity_start, activity_start + max(6, len(activity_entries))):
+        _clear_row(ws, row)
+    for row, entry in enumerate(activity_entries, start=activity_start):
+        observation = _join_parts(entry.location, entry.discipline, entry.notes)
         _write(ws, row, 1, entry.description)
-        _write(ws, row, 2, _text(entry.location))
-        _write(ws, row, 3, _text(entry.discipline))
-        _write(ws, row, 4, entry.notes)
-        row += 1
+        _write(ws, row, 4, observation)
 
-    row += 1
-    _write(ws, row, 1, "OCORRÊNCIAS")
-    row += 1
-    for col, label in enumerate(("Tipo", "Descrição", "Observações"), start=1):
-        _write(ws, row, col, label)
-    row += 1
-    for entry in daily_log.occurrences.all():
-        _write(ws, row, 1, entry.get_occurrence_type_display())
-        _write(ws, row, 2, entry.description)
-        _write(ws, row, 3, entry.notes)
-        row += 1
+    for row in range(occurrence_start, occurrence_start + max(4, len(occurrence_entries))):
+        _clear_row(ws, row)
+    for row, entry in enumerate(occurrence_entries, start=occurrence_start):
+        _write(ws, row, 1, _join_parts(entry.description, entry.notes))
+        _write(ws, row, 4, entry.get_occurrence_type_display())
 
-    row += 1
-    _write(ws, row, 1, "MATERIAIS APLICADOS")
-    row += 1
-    for col, label in enumerate(("Material", "Local", "Quantidade", "Unidade", "Observações"), start=1):
-        _write(ws, row, col, label)
-    row += 1
-    for entry in daily_log.material_entries.select_related("item", "location"):
-        material_description = entry.description_snapshot
-        if entry.item_id:
-            material_description = f"{entry.item.eap_code} — {entry.description_snapshot or entry.item.description}"
-        _write(ws, row, 1, material_description)
-        _write(ws, row, 2, _text(entry.location))
-        _write(ws, row, 3, entry.quantity)
-        _write(ws, row, 4, entry.unit_snapshot)
-        _write(ws, row, 5, entry.notes)
-        row += 1
+    for row in range(team_start, team_start + max(4, len(team_entries))):
+        _clear_row(ws, row)
+    for row, entry in enumerate(team_entries, start=team_start):
+        _write(ws, row, 1, "")
+        _write(ws, row, 2, _join_parts(entry.team_name, entry.contractor_name, entry.role_or_service, entry.notes))
+        _write(ws, row, 5, entry.worker_count)
+
+    _write(ws, material_heading_row, 1, "Materiais aplicados")
+    _write(ws, material_heading_row + 1, 1, "Código")
+    _write(ws, material_heading_row + 1, 2, "Descrição")
+    _write(ws, material_heading_row + 1, 5, "Quantidade / Unidade")
+    for row in range(material_start, material_start + max(5, len(material_entries))):
+        _clear_row(ws, row)
+    for row, entry in enumerate(material_entries, start=material_start):
+        _write(ws, row, 1, getattr(entry.item, "eap_code", ""))
+        _write(ws, row, 2, _join_parts(_entry_material_description(entry), entry.location, entry.notes))
+        _write(ws, row, 5, _join_parts(entry.quantity, entry.unit_snapshot))
 
 
 @transaction.atomic
