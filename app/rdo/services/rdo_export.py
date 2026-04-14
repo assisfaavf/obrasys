@@ -13,7 +13,7 @@ from utils.paths import get_exports_dir, get_template_path
 
 TEMPLATE_NAME = "modelo-de-diario-de-obras-2-0.xlsx"
 WORK_ORDER_SHEET = "Livro de Ordem"
-DAILY_LOG_SHEET = "Diario de Obras"
+DAILY_LOG_SHEET = "Diário de Obras"
 
 
 def _text(value) -> str:
@@ -63,22 +63,22 @@ def fill_work_order_sheet(workbook, project) -> None:
     _write(ws, 1, 1, "LIVRO DE ORDEM")
     _write_pair(ws, 3, "Obra", project.name)
     _write_pair(ws, 4, "Cliente", getattr(project.client, "name", ""))
-    _write_pair(ws, 5, "Endereco", _text(getattr(work_order, "address_snapshot", "")) or project.address)
+    _write_pair(ws, 5, "Endereço", _text(getattr(work_order, "address_snapshot", "")) or project.address)
     _write_pair(ws, 6, "ART", getattr(work_order, "art_number", ""))
     _write_pair(ws, 7, "Contrato", getattr(work_order, "contract_number", ""))
     _write_pair(ws, 8, "Valor do contrato", getattr(work_order, "contract_value", ""))
     _write_pair(ws, 9, "Contratada", getattr(work_order, "contractor_name", ""))
     _write_pair(ws, 10, "Documento contratada", getattr(work_order, "contractor_document", ""))
-    _write_pair(ws, 11, "Responsavel tecnico", getattr(work_order, "technical_manager_name", ""))
+    _write_pair(ws, 11, "Responsável técnico", getattr(work_order, "technical_manager_name", ""))
     _write_pair(ws, 12, "CREA/CAU", getattr(work_order, "technical_manager_crea", ""))
-    _write_pair(ws, 13, "Inicio da obra", _date_text(getattr(work_order, "work_start_date", None) or project.start_date))
+    _write_pair(ws, 13, "Início da obra", _date_text(getattr(work_order, "work_start_date", None) or project.start_date))
     _write_pair(
         ws,
         14,
-        "Previsao de termino",
+        "Previsão de término",
         _date_text(getattr(work_order, "expected_end_date", None) or project.planned_end_date),
     )
-    _write_pair(ws, 15, "Observacoes", getattr(work_order, "additional_notes", ""))
+    _write_pair(ws, 15, "Observações", getattr(work_order, "additional_notes", ""))
 
 
 def _weather_display(daily_log: DailyWorkLog, field_name: str) -> str:
@@ -89,23 +89,23 @@ def _weather_display(daily_log: DailyWorkLog, field_name: str) -> str:
 
 
 def fill_daily_log_sheet(workbook, daily_log: DailyWorkLog) -> None:
-    ws = _sheet(workbook, DAILY_LOG_SHEET, "Diário de Obras")
+    ws = _sheet(workbook, DAILY_LOG_SHEET, "Diario de Obras", "DiÃ¡rio de Obras")
 
-    _write(ws, 1, 1, "DIARIO DE OBRAS")
+    _write(ws, 1, 1, "DIÁRIO DE OBRAS")
     _write_pair(ws, 3, "Obra", daily_log.project.name)
     _write_pair(ws, 4, "Data", _date_text(daily_log.log_date))
-    _write_pair(ws, 5, "Responsavel", daily_log.responsible_name)
-    _write_pair(ws, 6, "Tempo manha", _weather_display(daily_log, "weather_morning"))
+    _write_pair(ws, 5, "Responsável", daily_log.responsible_name)
+    _write_pair(ws, 6, "Tempo manhã", _weather_display(daily_log, "weather_morning"))
     _write_pair(ws, 7, "Tempo tarde", _weather_display(daily_log, "weather_afternoon"))
     _write_pair(ws, 8, "Tempo noite", _weather_display(daily_log, "weather_night"))
-    _write_pair(ws, 9, "Notas", daily_log.notes)
-    _write_pair(ws, 10, "Observacao geral", daily_log.general_observation)
-    _write_pair(ws, 11, "Motivo de interrupcao", daily_log.interruption_reason)
+    _write_pair(ws, 9, "Observações do dia", daily_log.notes)
+    _write_pair(ws, 10, "Observação geral", daily_log.general_observation)
+    _write_pair(ws, 11, "Motivo de interrupção", daily_log.interruption_reason)
 
     row = 13
     _write(ws, row, 1, "EQUIPES")
     row += 1
-    for col, label in enumerate(("Equipe", "Contratada", "Funcao/Servico", "Quantidade", "Notas"), start=1):
+    for col, label in enumerate(("Equipe", "Contratada", "Função/Serviço", "Quantidade", "Observações"), start=1):
         _write(ws, row, col, label)
     row += 1
     for entry in daily_log.team_entries.all():
@@ -119,7 +119,7 @@ def fill_daily_log_sheet(workbook, daily_log: DailyWorkLog) -> None:
     row += 1
     _write(ws, row, 1, "ATIVIDADES EXECUTADAS")
     row += 1
-    for col, label in enumerate(("Descricao", "Local", "Disciplina", "Notas"), start=1):
+    for col, label in enumerate(("Descrição", "Local", "Disciplina", "Observações"), start=1):
         _write(ws, row, col, label)
     row += 1
     for entry in daily_log.activity_entries.select_related("location", "discipline"):
@@ -130,9 +130,9 @@ def fill_daily_log_sheet(workbook, daily_log: DailyWorkLog) -> None:
         row += 1
 
     row += 1
-    _write(ws, row, 1, "OCORRENCIAS")
+    _write(ws, row, 1, "OCORRÊNCIAS")
     row += 1
-    for col, label in enumerate(("Tipo", "Descricao", "Notas"), start=1):
+    for col, label in enumerate(("Tipo", "Descrição", "Observações"), start=1):
         _write(ws, row, col, label)
     row += 1
     for entry in daily_log.occurrences.all():
@@ -141,12 +141,36 @@ def fill_daily_log_sheet(workbook, daily_log: DailyWorkLog) -> None:
         _write(ws, row, 3, entry.notes)
         row += 1
 
+    row += 1
+    _write(ws, row, 1, "MATERIAIS APLICADOS")
+    row += 1
+    for col, label in enumerate(("Material", "Local", "Quantidade", "Unidade", "Observações"), start=1):
+        _write(ws, row, col, label)
+    row += 1
+    for entry in daily_log.material_entries.select_related("item", "location"):
+        material_description = entry.description_snapshot
+        if entry.item_id:
+            material_description = f"{entry.item.eap_code} — {entry.description_snapshot or entry.item.description}"
+        _write(ws, row, 1, material_description)
+        _write(ws, row, 2, _text(entry.location))
+        _write(ws, row, 3, entry.quantity)
+        _write(ws, row, 4, entry.unit_snapshot)
+        _write(ws, row, 5, entry.notes)
+        row += 1
+
 
 @transaction.atomic
 def generate_rdo_xlsx(daily_log_id: int):
     daily_log = (
         DailyWorkLog.objects.select_related("project", "project__client", "project__work_order_info")
-        .prefetch_related("team_entries", "activity_entries__location", "activity_entries__discipline", "occurrences")
+        .prefetch_related(
+            "team_entries",
+            "activity_entries__location",
+            "activity_entries__discipline",
+            "occurrences",
+            "material_entries__item",
+            "material_entries__location",
+        )
         .get(pk=daily_log_id)
     )
 
@@ -190,6 +214,7 @@ def generate_rdo_xlsx(daily_log_id: int):
             "team_entries_count": daily_log.team_entries.count(),
             "activity_entries_count": daily_log.activity_entries.count(),
             "occurrences_count": daily_log.occurrences.count(),
+            "material_entries_count": daily_log.material_entries.count(),
             "template": TEMPLATE_NAME,
         },
     )

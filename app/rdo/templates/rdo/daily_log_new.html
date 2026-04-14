@@ -1,14 +1,14 @@
 {% extends "billing/base.html" %}
 
-{% block title %}Novo diario{% endblock %}
+{% block title %}Novo diário{% endblock %}
 
 {% block content %}
-  <h1>Novo diario - {{ project.name }}</h1>
+  <h1>Novo diário - {{ project.name }}</h1>
 
   <form method="post">
     {% csrf_token %}
     {{ form.as_p }}
-    <button type="submit">Criar diario</button>
+    <button type="submit">Criar diário</button>
   </form>
 
   <p><a href="{% url 'rdo:project_rdo_list' project.id %}">Voltar para RDO</a></p>

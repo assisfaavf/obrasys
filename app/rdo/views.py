@@ -10,6 +10,7 @@ from exports.models import ExportStatus
 from rdo.forms import (
     DailyWorkActivityEntryForm,
     DailyWorkLogForm,
+    DailyWorkMaterialEntryForm,
     DailyWorkOccurrenceForm,
     DailyWorkTeamEntryForm,
     ProjectWorkOrderInfoForm,
@@ -17,6 +18,7 @@ from rdo.forms import (
 from rdo.models import (
     DailyWorkActivityEntry,
     DailyWorkLog,
+    DailyWorkMaterialEntry,
     DailyWorkOccurrence,
     DailyWorkTeamEntry,
     ProjectWorkOrderInfo,
@@ -30,7 +32,7 @@ TeamEntryFormSet = inlineformset_factory(
     DailyWorkTeamEntry,
     form=DailyWorkTeamEntryForm,
     fields=("team_name", "contractor_name", "role_or_service", "worker_count", "notes"),
-    extra=3,
+    extra=1,
     can_delete=True,
 )
 
@@ -39,7 +41,7 @@ ActivityEntryFormSet = inlineformset_factory(
     DailyWorkActivityEntry,
     form=DailyWorkActivityEntryForm,
     fields=("description", "location", "discipline", "notes"),
-    extra=3,
+    extra=1,
     can_delete=True,
 )
 
@@ -48,7 +50,16 @@ OccurrenceFormSet = inlineformset_factory(
     DailyWorkOccurrence,
     form=DailyWorkOccurrenceForm,
     fields=("occurrence_type", "description", "notes"),
-    extra=2,
+    extra=1,
+    can_delete=True,
+)
+
+MaterialEntryFormSet = inlineformset_factory(
+    DailyWorkLog,
+    DailyWorkMaterialEntry,
+    form=DailyWorkMaterialEntryForm,
+    fields=("item", "location", "quantity", "unit_snapshot", "notes"),
+    extra=1,
     can_delete=True,
 )
 
@@ -58,7 +69,7 @@ def rdo_project_list_view(request, project_id: int):
     project = get_object_or_404(Project.objects.select_related("client"), pk=project_id)
     daily_logs = (
         project.daily_work_logs.select_related("created_by")
-        .prefetch_related("team_entries", "activity_entries", "occurrences")
+        .prefetch_related("team_entries", "activity_entries", "occurrences", "material_entries")
         .order_by("-log_date", "-id")
     )
     return render(
@@ -83,7 +94,7 @@ def rdo_new_view(request, project_id: int):
             daily_log.project = project
             daily_log.created_by = request.user
             daily_log.save()
-            messages.success(request, "Diario de obra criado.")
+            messages.success(request, "Diário de obra criado.")
             return redirect("rdo:daily_log_detail", daily_log_id=daily_log.id)
 
     return render(
@@ -114,18 +125,26 @@ def daily_log_detail_view(request, daily_log_id: int):
             form_kwargs={"project": project},
         )
         occurrence_formset = OccurrenceFormSet(request.POST, instance=daily_log, prefix="occurrences")
+        material_formset = MaterialEntryFormSet(
+            request.POST,
+            instance=daily_log,
+            prefix="materials",
+            form_kwargs={"project": project},
+        )
 
         if (
             form.is_valid()
             and team_formset.is_valid()
             and activity_formset.is_valid()
             and occurrence_formset.is_valid()
+            and material_formset.is_valid()
         ):
             form.save()
             team_formset.save()
             activity_formset.save()
             occurrence_formset.save()
-            messages.success(request, "Diario de obra atualizado.")
+            material_formset.save()
+            messages.success(request, "Diário de obra atualizado.")
             return redirect("rdo:daily_log_detail", daily_log_id=daily_log.id)
     else:
         form = DailyWorkLogForm(instance=daily_log, project=project)
@@ -136,6 +155,11 @@ def daily_log_detail_view(request, daily_log_id: int):
             form_kwargs={"project": project},
         )
         occurrence_formset = OccurrenceFormSet(instance=daily_log, prefix="occurrences")
+        material_formset = MaterialEntryFormSet(
+            instance=daily_log,
+            prefix="materials",
+            form_kwargs={"project": project},
+        )
 
     rdo_template_available = True
     rdo_template_error = ""
@@ -144,6 +168,11 @@ def daily_log_detail_view(request, daily_log_id: int):
     except FileNotFoundError:
         rdo_template_available = False
         rdo_template_error = f"Template ausente: assets/templates/{TEMPLATE_NAME}."
+
+    material_units = {
+        str(item.id): item.unit.code
+        for item in project.budget_items.filter(is_active=True).select_related("unit").order_by("eap_code")
+    }
 
     return render(
         request,
@@ -155,6 +184,8 @@ def daily_log_detail_view(request, daily_log_id: int):
             "team_formset": team_formset,
             "activity_formset": activity_formset,
             "occurrence_formset": occurrence_formset,
+            "material_formset": material_formset,
+            "material_units": material_units,
             "rdo_template_available": rdo_template_available,
             "rdo_template_error": rdo_template_error,
         },

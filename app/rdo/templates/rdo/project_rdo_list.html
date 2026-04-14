@@ -4,11 +4,11 @@
 
 {% block content %}
   <h1>RDO - {{ project.name }}</h1>
-  <p class="muted">Diario de Obras e Livro de Ordem</p>
+  <p class="muted">Diário de Obras e Livro de Ordem</p>
 
   <div class="actions">
     <a href="{% url 'billing:project_detail' project.id %}">Voltar para obra</a>
-    <a href="{% url 'rdo:daily_log_new' project.id %}">Novo diario</a>
+    <a href="{% url 'rdo:daily_log_new' project.id %}">Novo diário</a>
     <a href="{% url 'rdo:work_order' project.id %}">Livro de Ordem</a>
   </div>
 
@@ -16,9 +16,9 @@
     <thead>
       <tr>
         <th>Data</th>
-        <th>Responsavel</th>
+        <th>Responsável</th>
         <th>Resumo</th>
-        <th>Acoes</th>
+        <th>Ações</th>
       </tr>
     </thead>
     <tbody>
@@ -29,13 +29,14 @@
           <td>
             {{ daily_log.team_entries.count }} equipe(s),
             {{ daily_log.activity_entries.count }} atividade(s),
-            {{ daily_log.occurrences.count }} ocorrencia(s)
+            {{ daily_log.occurrences.count }} ocorrência(s),
+            {{ daily_log.material_entries.count }} material(is)
           </td>
           <td><a href="{% url 'rdo:daily_log_detail' daily_log.id %}">Abrir</a></td>
         </tr>
       {% empty %}
         <tr>
-          <td colspan="4">Nenhum diario cadastrado.</td>
+          <td colspan="4">Nenhum diário cadastrado.</td>
         </tr>
       {% endfor %}
     </tbody>

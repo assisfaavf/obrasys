@@ -1,4 +1,8 @@
+from decimal import Decimal
+
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 
 
@@ -11,11 +15,11 @@ class WeatherCondition(models.TextChoices):
 
 
 class OccurrenceType(models.TextChoices):
-    ORIENTACAO = "ORIENTACAO", "Orientacao"
+    ORIENTACAO = "ORIENTACAO", "Orientação"
     ACIDENTE = "ACIDENTE", "Acidente"
-    INTERRUPCAO = "INTERRUPCAO", "Interrupcao"
+    INTERRUPCAO = "INTERRUPCAO", "Interrupção"
     VISITA = "VISITA", "Visita"
-    INSPECAO = "INSPECAO", "Inspecao"
+    INSPECAO = "INSPECAO", "Inspeção"
     OUTRO = "OUTRO", "Outro"
 
 
@@ -130,3 +134,56 @@ class DailyWorkOccurrence(models.Model):
 
     def __str__(self) -> str:
         return f"{self.get_occurrence_type_display()} - {self.description[:60]}"
+
+
+class DailyWorkMaterialEntry(models.Model):
+    daily_log = models.ForeignKey(DailyWorkLog, on_delete=models.CASCADE, related_name="material_entries")
+    item = models.ForeignKey(
+        "catalog.BudgetItem",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="daily_work_material_entries",
+    )
+    description_snapshot = models.CharField(max_length=255, blank=True)
+    location = models.ForeignKey(
+        "core.ProjectLocation",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="daily_work_material_entries",
+    )
+    quantity = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        validators=[MinValueValidator(Decimal("0.001"))],
+    )
+    unit_snapshot = models.CharField(max_length=40, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        description = self.description_snapshot or getattr(self.item, "description", "") or "Material"
+        return f"{description} - {self.quantity}"
+
+    def clean(self):
+        super().clean()
+
+        if self.quantity is not None and self.quantity <= 0:
+            raise ValidationError({"quantity": "A quantidade deve ser maior que zero."})
+
+        project_id = getattr(self.daily_log, "project_id", None)
+        if self.item_id and project_id and self.item.project_id != project_id:
+            raise ValidationError({"item": "O material deve pertencer à mesma obra do diário."})
+
+        if self.location_id and project_id and self.location.project_id != project_id:
+            raise ValidationError({"location": "O local deve pertencer à mesma obra do diário."})
+
+    def save(self, *args, **kwargs):
+        if self.item_id:
+            self.description_snapshot = self.item.description
+            self.unit_snapshot = self.item.unit.code
+        self.full_clean()
+        super().save(*args, **kwargs)

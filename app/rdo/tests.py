@@ -4,17 +4,20 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.test import TestCase
+from django.urls import reverse
 from openpyxl import Workbook, load_workbook
 
-from catalog.models import Discipline
+from catalog.models import BudgetItem, Discipline, Unit
 from core.models import Client, Project, ProjectLocation
 from exports.models import ExportStatus, ExportType, MeasurementExport
 from rdo.forms import DailyWorkLogForm
 from rdo.models import (
     DailyWorkActivityEntry,
     DailyWorkLog,
+    DailyWorkMaterialEntry,
     DailyWorkOccurrence,
     DailyWorkTeamEntry,
     OccurrenceType,
@@ -122,6 +125,38 @@ class RdoModelTests(TestCase):
         self.assertEqual(activity.discipline, discipline)
         self.assertEqual(occurrence.occurrence_type, OccurrenceType.INSPECAO)
 
+    def test_create_material_entry_from_project_budget_item(self):
+        daily_log = DailyWorkLog.objects.create(
+            project=self.project,
+            log_date=date(2026, 4, 13),
+            responsible_name="Responsavel",
+        )
+        unit = Unit.objects.create(code="kg", name="Quilograma")
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="MAT-001",
+            description="Cimento CP II",
+            unit=unit,
+            qty_contracted=Decimal("100.000"),
+        )
+        location = ProjectLocation.objects.create(
+            project=self.project,
+            code="P1",
+            name="Pavimento 1",
+        )
+
+        material = DailyWorkMaterialEntry.objects.create(
+            daily_log=daily_log,
+            item=item,
+            location=location,
+            quantity=Decimal("12.500"),
+            notes="Aplicado na alvenaria",
+        )
+
+        self.assertEqual(material.description_snapshot, "Cimento CP II")
+        self.assertEqual(material.unit_snapshot, "kg")
+        self.assertEqual(material.location, location)
+
     def test_create_and_edit_work_order_info(self):
         work_order = ProjectWorkOrderInfo.objects.create(
             project=self.project,
@@ -180,13 +215,27 @@ class RdoExportTests(TestCase):
             occurrence_type=OccurrenceType.VISITA,
             description="Visita tecnica",
         )
+        self.unit = Unit.objects.create(code="saco", name="Saco")
+        self.material_item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="MAT-001",
+            description="Cimento CP II",
+            unit=self.unit,
+            qty_contracted=Decimal("80.000"),
+        )
+        DailyWorkMaterialEntry.objects.create(
+            daily_log=self.daily_log,
+            item=self.material_item,
+            quantity=Decimal("8.000"),
+            notes="Materiais da alvenaria",
+        )
 
     def _create_template(self, path: Path) -> Path:
         workbook = Workbook()
         workbook.active.title = "Livro de Ordem"
-        workbook.create_sheet("Diário de Obras")
-        workbook.create_sheet("Relatório Fotográfico")
-        workbook["Relatório Fotográfico"]["A1"] = "Template fotografico preservado"
+        workbook.create_sheet("DiÃ¡rio de Obras")
+        workbook.create_sheet("RelatÃ³rio FotogrÃ¡fico")
+        workbook["RelatÃ³rio FotogrÃ¡fico"]["A1"] = "Template fotografico preservado"
         workbook.save(path)
         return path
 
@@ -215,13 +264,20 @@ class RdoExportTests(TestCase):
 
             workbook = load_workbook(output_path)
             self.assertIn("Livro de Ordem", workbook.sheetnames)
-            self.assertIn("Diário de Obras", workbook.sheetnames)
-            self.assertIn("Relatório Fotográfico", workbook.sheetnames)
+            self.assertIn("DiÃ¡rio de Obras", workbook.sheetnames)
+            self.assertIn("RelatÃ³rio FotogrÃ¡fico", workbook.sheetnames)
             self.assertEqual(workbook["Livro de Ordem"]["B3"].value, self.project.name)
             self.assertEqual(workbook["Livro de Ordem"]["B6"].value, "ART-999")
-            self.assertEqual(workbook["Diário de Obras"]["B4"].value, "13/04/2026")
-            self.assertEqual(workbook["Diário de Obras"]["A15"].value, "Equipe Civil")
-            self.assertEqual(workbook["Relatório Fotográfico"]["A1"].value, "Template fotografico preservado")
+            self.assertEqual(workbook["DiÃ¡rio de Obras"]["B4"].value, "13/04/2026")
+            self.assertEqual(workbook["DiÃ¡rio de Obras"]["A15"].value, "Equipe Civil")
+            daily_sheet = workbook["DiÃ¡rio de Obras"]
+            values = [cell.value for row in daily_sheet.iter_rows() for cell in row]
+            self.assertIn("MATERIAIS APLICADOS", values)
+            self.assertIn("MAT-001 — Cimento CP II", values)
+            self.assertIn(8, values)
+            self.assertIn("saco", values)
+            self.assertEqual(export_record.summary_json["material_entries_count"], 1)
+            self.assertEqual(workbook["RelatÃ³rio FotogrÃ¡fico"]["A1"].value, "Template fotografico preservado")
 
     def test_generate_rdo_xlsx_missing_template_returns_error_record(self):
         with patch("rdo.services.rdo_export.get_template_path", side_effect=FileNotFoundError("missing")):
@@ -231,3 +287,136 @@ class RdoExportTests(TestCase):
         self.assertEqual(export_record.export_type, ExportType.RDO_XLSX)
         self.assertIsNone(output_path)
         self.assertIn("missing", export_record.error_message)
+
+
+class RdoViewTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="staff-rdo",
+            password="password",
+            is_staff=True,
+        )
+        self.client.force_login(self.user)
+        self.client_obj = Client.objects.create(name="Cliente View RDO")
+        self.project = Project.objects.create(
+            name="Obra View RDO",
+            client=self.client_obj,
+            address="Rua View, 300",
+            start_date=date(2026, 1, 10),
+            planned_end_date=date(2026, 12, 20),
+        )
+        self.other_project = Project.objects.create(
+            name="Outra Obra",
+            client=self.client_obj,
+        )
+        self.daily_log = DailyWorkLog.objects.create(
+            project=self.project,
+            log_date=date(2026, 4, 13),
+            responsible_name="Mestre de Obras",
+        )
+        self.location = ProjectLocation.objects.create(
+            project=self.project,
+            code="P1",
+            name="Pavimento 1",
+        )
+        self.unit = Unit.objects.create(code="m3", name="Metro cubico")
+        self.material_item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="MAT-001",
+            description="Concreto usinado",
+            unit=self.unit,
+            qty_contracted=Decimal("25.000"),
+        )
+        BudgetItem.objects.create(
+            project=self.other_project,
+            eap_code="MAT-OUT",
+            description="Material de outra obra",
+            unit=self.unit,
+            qty_contracted=Decimal("5.000"),
+        )
+
+    def test_daily_log_detail_displays_portuguese_labels_and_initial_rows(self):
+        response = self.client.get(reverse("rdo:daily_log_detail", args=[self.daily_log.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Diário de Obras")
+        self.assertContains(response, "Dados gerais do diário")
+        self.assertContains(response, "Responsável")
+        self.assertContains(response, "Atividades executadas")
+        self.assertContains(response, "Ocorrências")
+        self.assertContains(response, "Materiais aplicados")
+        self.assertContains(response, "Adicionar linha", count=4)
+        self.assertEqual(response.context["team_formset"].total_form_count(), 1)
+        self.assertEqual(response.context["activity_formset"].total_form_count(), 1)
+        self.assertEqual(response.context["occurrence_formset"].total_form_count(), 1)
+        self.assertEqual(response.context["material_formset"].total_form_count(), 1)
+
+    def test_material_options_are_filtered_by_daily_log_project(self):
+        response = self.client.get(reverse("rdo:daily_log_detail", args=[self.daily_log.id]))
+
+        self.assertContains(response, "MAT-001 — Concreto usinado")
+        self.assertNotContains(response, "MAT-OUT")
+        self.assertNotContains(response, "Material de outra obra")
+
+    def test_post_accepts_extra_rows_and_creates_material_entry(self):
+        data = {
+            "log_date": "2026-04-13",
+            "responsible_name": "Mestre atualizado",
+            "weather_morning": "",
+            "weather_afternoon": "",
+            "weather_night": "",
+            "notes": "Dia sem restricoes",
+            "general_observation": "",
+            "interruption_reason": "",
+            "teams-TOTAL_FORMS": "2",
+            "teams-INITIAL_FORMS": "0",
+            "teams-MIN_NUM_FORMS": "0",
+            "teams-MAX_NUM_FORMS": "1000",
+            "teams-0-team_name": "Equipe Civil",
+            "teams-0-contractor_name": "Construtora",
+            "teams-0-role_or_service": "Alvenaria",
+            "teams-0-worker_count": "4",
+            "teams-0-notes": "",
+            "teams-1-team_name": "Equipe Instalacoes",
+            "teams-1-contractor_name": "Instaladora",
+            "teams-1-role_or_service": "Hidraulica",
+            "teams-1-worker_count": "2",
+            "teams-1-notes": "",
+            "activities-TOTAL_FORMS": "1",
+            "activities-INITIAL_FORMS": "0",
+            "activities-MIN_NUM_FORMS": "0",
+            "activities-MAX_NUM_FORMS": "1000",
+            "activities-0-description": "Execucao de alvenaria",
+            "activities-0-location": str(self.location.id),
+            "activities-0-discipline": "",
+            "activities-0-notes": "",
+            "occurrences-TOTAL_FORMS": "1",
+            "occurrences-INITIAL_FORMS": "0",
+            "occurrences-MIN_NUM_FORMS": "0",
+            "occurrences-MAX_NUM_FORMS": "1000",
+            "occurrences-0-occurrence_type": OccurrenceType.VISITA,
+            "occurrences-0-description": "Visita da fiscalizacao",
+            "occurrences-0-notes": "",
+            "materials-TOTAL_FORMS": "1",
+            "materials-INITIAL_FORMS": "0",
+            "materials-MIN_NUM_FORMS": "0",
+            "materials-MAX_NUM_FORMS": "1000",
+            "materials-0-item": str(self.material_item.id),
+            "materials-0-location": str(self.location.id),
+            "materials-0-quantity": "3.500",
+            "materials-0-unit_snapshot": "",
+            "materials-0-notes": "Aplicado no pavimento 1",
+        }
+
+        response = self.client.post(reverse("rdo:daily_log_detail", args=[self.daily_log.id]), data=data)
+
+        self.assertEqual(response.status_code, 302)
+        self.daily_log.refresh_from_db()
+        self.assertEqual(self.daily_log.responsible_name, "Mestre atualizado")
+        self.assertEqual(self.daily_log.team_entries.count(), 2)
+        self.assertEqual(self.daily_log.activity_entries.count(), 1)
+        self.assertEqual(self.daily_log.occurrences.count(), 1)
+        material = self.daily_log.material_entries.get()
+        self.assertEqual(material.item, self.material_item)
+        self.assertEqual(material.quantity, Decimal("3.500"))
+        self.assertEqual(material.unit_snapshot, "m3")

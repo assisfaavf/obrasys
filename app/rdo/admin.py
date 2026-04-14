@@ -3,6 +3,7 @@ from django.contrib import admin
 from rdo.models import (
     DailyWorkActivityEntry,
     DailyWorkLog,
+    DailyWorkMaterialEntry,
     DailyWorkOccurrence,
     DailyWorkTeamEntry,
     ProjectWorkOrderInfo,
@@ -21,6 +22,11 @@ class DailyWorkActivityEntryInline(admin.TabularInline):
 
 class DailyWorkOccurrenceInline(admin.TabularInline):
     model = DailyWorkOccurrence
+    extra = 1
+
+
+class DailyWorkMaterialEntryInline(admin.TabularInline):
+    model = DailyWorkMaterialEntry
     extra = 1
 
 
@@ -44,7 +50,12 @@ class DailyWorkLogAdmin(admin.ModelAdmin):
     list_filter = ("project", "log_date")
     search_fields = ("project__name", "responsible_name", "notes", "general_observation")
     ordering = ("-log_date", "-id")
-    inlines = (DailyWorkTeamEntryInline, DailyWorkActivityEntryInline, DailyWorkOccurrenceInline)
+    inlines = (
+        DailyWorkTeamEntryInline,
+        DailyWorkActivityEntryInline,
+        DailyWorkOccurrenceInline,
+        DailyWorkMaterialEntryInline,
+    )
 
 
 @admin.register(DailyWorkTeamEntry)
@@ -66,3 +77,10 @@ class DailyWorkOccurrenceAdmin(admin.ModelAdmin):
     list_display = ("daily_log", "occurrence_type", "description")
     list_filter = ("daily_log__project", "occurrence_type")
     search_fields = ("description", "notes")
+
+
+@admin.register(DailyWorkMaterialEntry)
+class DailyWorkMaterialEntryAdmin(admin.ModelAdmin):
+    list_display = ("daily_log", "item", "location", "quantity", "unit_snapshot")
+    list_filter = ("daily_log__project", "location")
+    search_fields = ("description_snapshot", "notes", "item__eap_code", "item__description")

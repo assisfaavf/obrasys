@@ -1,15 +1,21 @@
 from django import forms
 from django.core.exceptions import ValidationError
 
-from catalog.models import Discipline
+from catalog.models import BudgetItem, Discipline
 from core.models import ProjectLocation
 from rdo.models import (
     DailyWorkActivityEntry,
     DailyWorkLog,
+    DailyWorkMaterialEntry,
     DailyWorkOccurrence,
     DailyWorkTeamEntry,
     ProjectWorkOrderInfo,
 )
+
+
+class BudgetItemChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, obj):
+        return f"{obj.eap_code} — {obj.description}"
 
 
 class ProjectWorkOrderInfoForm(forms.ModelForm):
@@ -33,6 +39,19 @@ class ProjectWorkOrderInfoForm(forms.ModelForm):
             "expected_end_date": forms.DateInput(attrs={"type": "date"}),
             "additional_notes": forms.Textarea(attrs={"rows": 4}),
         }
+        labels = {
+            "art_number": "ART",
+            "contractor_name": "Contratada",
+            "contractor_document": "Documento da contratada",
+            "technical_manager_name": "Responsável técnico",
+            "technical_manager_crea": "CREA/CAU",
+            "work_start_date": "Início da obra",
+            "expected_end_date": "Previsão de término",
+            "address_snapshot": "Endereço",
+            "contract_number": "Contrato",
+            "contract_value": "Valor do contrato",
+            "additional_notes": "Observações",
+        }
 
 
 class DailyWorkLogForm(forms.ModelForm):
@@ -54,6 +73,16 @@ class DailyWorkLogForm(forms.ModelForm):
             "general_observation": forms.Textarea(attrs={"rows": 3}),
             "interruption_reason": forms.Textarea(attrs={"rows": 3}),
         }
+        labels = {
+            "log_date": "Data",
+            "responsible_name": "Responsável",
+            "weather_morning": "Tempo pela manhã",
+            "weather_afternoon": "Tempo à tarde",
+            "weather_night": "Tempo à noite",
+            "notes": "Observações do dia",
+            "general_observation": "Observação geral",
+            "interruption_reason": "Motivo de interrupção",
+        }
 
     def __init__(self, *args, project=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -68,7 +97,7 @@ class DailyWorkLogForm(forms.ModelForm):
             if self.instance.pk:
                 duplicate = duplicate.exclude(pk=self.instance.pk)
             if duplicate.exists():
-                raise ValidationError("Ja existe diario cadastrado para esta obra nesta data.")
+                raise ValidationError("Já existe diário cadastrado para esta obra nesta data.")
         return log_date
 
 
@@ -79,6 +108,13 @@ class DailyWorkTeamEntryForm(forms.ModelForm):
         widgets = {
             "notes": forms.Textarea(attrs={"rows": 2}),
         }
+        labels = {
+            "team_name": "Equipe",
+            "contractor_name": "Contratada",
+            "role_or_service": "Função/Serviço",
+            "worker_count": "Quantidade",
+            "notes": "Observações",
+        }
 
 
 class DailyWorkActivityEntryForm(forms.ModelForm):
@@ -88,6 +124,12 @@ class DailyWorkActivityEntryForm(forms.ModelForm):
         widgets = {
             "description": forms.Textarea(attrs={"rows": 2}),
             "notes": forms.Textarea(attrs={"rows": 2}),
+        }
+        labels = {
+            "description": "Descrição",
+            "location": "Local",
+            "discipline": "Disciplina",
+            "notes": "Observações",
         }
 
     def __init__(self, *args, project=None, **kwargs):
@@ -111,3 +153,50 @@ class DailyWorkOccurrenceForm(forms.ModelForm):
             "description": forms.Textarea(attrs={"rows": 2}),
             "notes": forms.Textarea(attrs={"rows": 2}),
         }
+        labels = {
+            "occurrence_type": "Tipo",
+            "description": "Descrição",
+            "notes": "Observações",
+        }
+
+
+class DailyWorkMaterialEntryForm(forms.ModelForm):
+    item = BudgetItemChoiceField(queryset=BudgetItem.objects.none(), required=False, label="Material")
+
+    class Meta:
+        model = DailyWorkMaterialEntry
+        fields = ("item", "location", "quantity", "unit_snapshot", "notes")
+        widgets = {
+            "notes": forms.Textarea(attrs={"rows": 2}),
+        }
+        labels = {
+            "item": "Material",
+            "location": "Local",
+            "quantity": "Quantidade",
+            "unit_snapshot": "Unidade",
+            "notes": "Observações",
+        }
+
+    def __init__(self, *args, project=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        project = project or getattr(getattr(self.instance, "daily_log", None), "project", None)
+        if project:
+            self.fields["item"].queryset = BudgetItem.objects.filter(
+                project=project,
+                is_active=True,
+            ).select_related("unit").order_by("eap_code")
+            self.fields["location"].queryset = ProjectLocation.objects.filter(
+                project=project,
+                is_active=True,
+            ).order_by("order_index", "code")
+        else:
+            self.fields["item"].queryset = BudgetItem.objects.none()
+            self.fields["location"].queryset = ProjectLocation.objects.none()
+        self.fields["item"].widget.attrs["data-material-item"] = "true"
+        self.fields["unit_snapshot"].widget.attrs["data-material-unit"] = "true"
+
+    def clean_quantity(self):
+        quantity = self.cleaned_data.get("quantity")
+        if quantity is not None and quantity <= 0:
+            raise ValidationError("A quantidade deve ser maior que zero.")
+        return quantity
