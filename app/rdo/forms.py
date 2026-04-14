@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django import forms
 from django.core.exceptions import ValidationError
 
@@ -16,6 +18,15 @@ from rdo.models import (
 class BudgetItemChoiceField(forms.ModelChoiceField):
     def label_from_instance(self, obj):
         return f"{obj.eap_code} — {obj.description}"
+
+
+class FlexibleDecimalField(forms.DecimalField):
+    def to_python(self, value):
+        if isinstance(value, str):
+            value = value.strip()
+            if "," in value:
+                value = value.replace(".", "").replace(",", ".")
+        return super().to_python(value)
 
 
 class ProjectWorkOrderInfoForm(forms.ModelForm):
@@ -162,6 +173,12 @@ class DailyWorkOccurrenceForm(forms.ModelForm):
 
 class DailyWorkMaterialEntryForm(forms.ModelForm):
     item = BudgetItemChoiceField(queryset=BudgetItem.objects.none(), required=False, label="Material")
+    quantity = FlexibleDecimalField(
+        max_digits=14,
+        decimal_places=3,
+        min_value=Decimal("0.001"),
+        label="Quantidade",
+    )
 
     class Meta:
         model = DailyWorkMaterialEntry

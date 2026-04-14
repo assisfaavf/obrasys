@@ -132,12 +132,18 @@ def daily_log_detail_view(request, daily_log_id: int):
             form_kwargs={"project": project},
         )
 
+        form_is_valid = form.is_valid()
+        team_formset_is_valid = team_formset.is_valid()
+        activity_formset_is_valid = activity_formset.is_valid()
+        occurrence_formset_is_valid = occurrence_formset.is_valid()
+        material_formset_is_valid = material_formset.is_valid()
+
         if (
-            form.is_valid()
-            and team_formset.is_valid()
-            and activity_formset.is_valid()
-            and occurrence_formset.is_valid()
-            and material_formset.is_valid()
+            form_is_valid
+            and team_formset_is_valid
+            and activity_formset_is_valid
+            and occurrence_formset_is_valid
+            and material_formset_is_valid
         ):
             form.save()
             team_formset.save()
@@ -146,6 +152,7 @@ def daily_log_detail_view(request, daily_log_id: int):
             material_formset.save()
             messages.success(request, "Diário de obra atualizado.")
             return redirect("rdo:daily_log_detail", daily_log_id=daily_log.id)
+        messages.error(request, "Não foi possível salvar o diário. Confira os campos destacados e tente novamente.")
     else:
         form = DailyWorkLogForm(instance=daily_log, project=project)
         team_formset = TeamEntryFormSet(instance=daily_log, prefix="teams")

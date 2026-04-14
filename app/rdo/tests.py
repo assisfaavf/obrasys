@@ -403,7 +403,7 @@ class RdoViewTests(TestCase):
             "materials-MAX_NUM_FORMS": "1000",
             "materials-0-item": str(self.material_item.id),
             "materials-0-location": str(self.location.id),
-            "materials-0-quantity": "3.500",
+            "materials-0-quantity": "3,500",
             "materials-0-unit_snapshot": "",
             "materials-0-notes": "Aplicado no pavimento 1",
         }
