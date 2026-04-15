@@ -303,7 +303,7 @@ def fill_daily_log_sheet(workbook, daily_log: DailyWorkLog) -> None:
         _merge_row_range(ws, row, 1, 2)
         _merge_row_range(ws, row, 5, 6)
     _write(ws, team_header_row, 1, "Equipe")
-    _write(ws, team_header_row, 3, "Quantidade")
+    _write(ws, team_header_row, 3, "Quantidade de funcionários")
     _write(ws, team_header_row, 4, "Local")
     _write(ws, team_header_row, 5, "Atividade/Serviço executado")
 

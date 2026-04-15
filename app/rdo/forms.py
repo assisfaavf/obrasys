@@ -121,7 +121,7 @@ class DailyWorkTeamEntryForm(forms.ModelForm):
         }
         labels = {
             "team_name": "Equipe",
-            "worker_count": "Quantidade",
+            "worker_count": "Quantidade de funcionários",
             "location": "Local",
             "activity_description": "Atividade/Serviço executado",
         }
