@@ -1,11 +1,12 @@
 from django.contrib import admin
 from django.contrib import messages
 from django.http import HttpResponseRedirect
-from django.urls import reverse
+from django.shortcuts import render
+from django.urls import path, reverse
 
-from core.forms import ProjectAdminForm
+from core.forms import ProjectAdminForm, ProjectStageCsvImportForm
 from core.models import Client, LocationTemplate, LocationTemplateItem, Project, ProjectLocation, ProjectStage
-from core.services import apply_location_template_to_project
+from core.services import apply_location_template_to_project, import_project_stages_from_csv
 
 
 @admin.register(Client)
@@ -64,6 +65,50 @@ class ProjectStageAdmin(admin.ModelAdmin):
     list_filter = ("project", "is_active")
     search_fields = ("project__name", "code", "name")
     ordering = ("project", "order_index", "code")
+    change_list_template = "admin/core/projectstage/change_list.html"
+
+    def get_urls(self):
+        custom_urls = [
+            path(
+                "import-csv/",
+                self.admin_site.admin_view(self.import_csv_view),
+                name="core_projectstage_import_csv",
+            ),
+        ]
+        return custom_urls + super().get_urls()
+
+    def import_csv_view(self, request):
+        summary = None
+        if request.method == "POST":
+            form = ProjectStageCsvImportForm(request.POST, request.FILES)
+            if form.is_valid():
+                summary = import_project_stages_from_csv(
+                    form.cleaned_data["csv_file"],
+                    form.cleaned_data["project"],
+                )
+                if summary["errors"]:
+                    messages.warning(
+                        request,
+                        "Importacao concluida com erros: "
+                        f"{summary['created']} criadas, {summary['updated']} atualizadas, "
+                        f"{len(summary['errors'])} erro(s).",
+                    )
+                else:
+                    messages.success(
+                        request,
+                        f"Importacao concluida: {summary['created']} criadas, {summary['updated']} atualizadas.",
+                    )
+        else:
+            form = ProjectStageCsvImportForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            "opts": self.model._meta,
+            "title": "Importar etapas por CSV",
+            "form": form,
+            "summary": summary,
+        }
+        return render(request, "admin/core/projectstage/import_csv.html", context)
 
 
 class LocationTemplateItemInline(admin.TabularInline):

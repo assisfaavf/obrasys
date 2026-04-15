@@ -1,0 +1,47 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+
+  <p>Formato esperado: <code>code,name,order_index,is_active</code>.</p>
+
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <fieldset class="module aligned">
+      {{ form.as_p }}
+    </fieldset>
+    <div class="submit-row">
+      <input type="submit" class="default" value="Importar CSV">
+    </div>
+  </form>
+
+  {% if summary %}
+    <h2>Resumo</h2>
+    <ul>
+      <li>Total de linhas: {{ summary.total }}</li>
+      <li>Criadas: {{ summary.created }}</li>
+      <li>Atualizadas: {{ summary.updated }}</li>
+      <li>Erros: {{ summary.errors|length }}</li>
+    </ul>
+
+    {% if summary.errors %}
+      <h2>Erros</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Linha</th>
+            <th>Erro</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for error in summary.errors %}
+            <tr>
+              <td>{{ error.line }}</td>
+              <td>{{ error.error }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  {% endif %}
+{% endblock %}
