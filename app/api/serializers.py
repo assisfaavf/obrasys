@@ -6,7 +6,7 @@ from rest_framework import serializers
 from billing.models import MeasurementPeriod, WorkflowStatus
 from billing.services.measurement_calc import compute_incc_factor, compute_period_totals
 from catalog.models import BudgetItem
-from core.models import Project
+from core.models import Project, ProjectStage
 from pricing.models import AdjustmentApplyTo
 from rdo.models import DailyWorkLog
 
@@ -56,6 +56,24 @@ class ProjectSerializer(serializers.ModelSerializer):
             "budget_items_count",
             "measurement_periods_count",
             "daily_work_logs_count",
+        )
+
+
+class ProjectStageSerializer(serializers.ModelSerializer):
+    project_name = serializers.CharField(source="project.name", read_only=True)
+
+    class Meta:
+        model = ProjectStage
+        fields = (
+            "id",
+            "project",
+            "project_name",
+            "code",
+            "name",
+            "order_index",
+            "is_active",
+            "created_at",
+            "updated_at",
         )
 
 

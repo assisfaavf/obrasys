@@ -12,6 +12,8 @@ from openpyxl import load_workbook
 from billing.models import MeasurementLineKind, MeasurementPeriod, WorkflowStatus
 from billing.services.measurement_calc import get_item_cumulative
 from catalog.models import BudgetItem
+from core.models import ProjectStage
+from core.services import get_stage_prefix_from_eap
 from exports.models import ExportStatus, ExportType, MeasurementExport
 from utils.paths import get_exports_dir, get_template_path
 
@@ -167,26 +169,73 @@ def _set_project_metadata(workbook, project) -> None:
 
 
 def _stage_code_from_eap(eap_code: str) -> str:
-    text = (eap_code or "").strip()
-    if "." not in text:
-        return text
-    return text.rsplit(".", 1)[0]
+    return get_stage_prefix_from_eap(eap_code)
 
 
-def _build_stage_rows(items: list[BudgetItem]) -> list[dict]:
+def _new_stage_context(project) -> dict:
+    stages = ProjectStage.objects.filter(project=project, is_active=True)
+    return {
+        "stages_by_code": {stage.code: stage for stage in stages},
+        "missing_stage_prefixes": set(),
+        "items_with_missing_stage": {},
+    }
+
+
+def _resolve_stage_info(stage_context: dict, item: BudgetItem) -> dict:
+    prefix = get_stage_prefix_from_eap(item.eap_code)
+    stage = stage_context["stages_by_code"].get(prefix)
+    if stage is not None:
+        return {
+            "code": stage.code,
+            "description": stage.name,
+            "order_index": stage.order_index,
+        }
+
+    if prefix:
+        stage_context["missing_stage_prefixes"].add(prefix)
+        stage_context["items_with_missing_stage"].setdefault(
+            item.eap_code,
+            {
+                "eap_code": item.eap_code,
+                "stage_prefix": prefix,
+                "description": item.description,
+            },
+        )
+
+    return {
+        "code": prefix,
+        "description": prefix,
+        "order_index": 0,
+    }
+
+
+def _stage_warning_summary(stage_context: dict) -> dict:
+    return {
+        "missing_stage_count": len(stage_context["missing_stage_prefixes"]),
+        "missing_stage_prefixes": sorted(stage_context["missing_stage_prefixes"]),
+        "items_with_missing_stage": [
+            stage_context["items_with_missing_stage"][eap_code]
+            for eap_code in sorted(stage_context["items_with_missing_stage"])
+        ],
+    }
+
+
+def _build_stage_rows(items: list[BudgetItem], stage_context: dict) -> list[dict]:
     grouped: dict[str, dict] = {}
     for item in items:
-        stage_code = _stage_code_from_eap(item.eap_code)
+        stage_info = _resolve_stage_info(stage_context, item)
+        stage_code = stage_info["code"]
         stage = grouped.setdefault(
             stage_code,
             {
                 "code": stage_code,
-                "description": stage_code,
+                "description": stage_info["description"],
+                "order_index": stage_info["order_index"],
                 "items": [],
             },
         )
         stage["items"].append(item)
-    return [grouped[key] for key in sorted(grouped.keys())]
+    return sorted(grouped.values(), key=lambda stage: (stage["order_index"], stage["code"]))
 
 
 def _update_stage_sheet(workbook, stage_rows: list[dict]) -> None:
@@ -203,7 +252,7 @@ def _update_stage_sheet(workbook, stage_rows: list[dict]) -> None:
         sheet.cell(row=index, column=2).value = stage["description"]
 
 
-def _update_contract_sheet(workbook, items: list[BudgetItem]) -> tuple[dict[str, int], list[str], int]:
+def _update_contract_sheet(workbook, items: list[BudgetItem], stage_context: dict) -> tuple[dict[str, int], list[str], int]:
     sheet = _find_contract_sheet(workbook)
     if sheet is None:
         raise ValidationError("Template Sienge invalido: aba 'Itens de Contrato' nao encontrada.")
@@ -226,7 +275,7 @@ def _update_contract_sheet(workbook, items: list[BudgetItem]) -> tuple[dict[str,
             overflow.append(item.eap_code)
             continue
 
-        stage_code = _stage_code_from_eap(item.eap_code)
+        stage_code = _resolve_stage_info(stage_context, item)["code"]
         unit_total = _q_money((item.pu_material or Decimal("0")) + (item.pu_labor or Decimal("0")))
         qty_contracted = _q_qty(item.qty_contracted)
 
@@ -278,7 +327,7 @@ def _format_period_label(period: MeasurementPeriod) -> str:
     return ""
 
 
-def _build_contract_progress(period: MeasurementPeriod) -> tuple[dict[str, dict], list[dict], list[dict]]:
+def _build_contract_progress(period: MeasurementPeriod, stage_context: dict) -> tuple[dict[str, dict], list[dict], list[dict]]:
     lines = list(
         period.lines.select_related("item", "item__unit", "location", "extra_unit").order_by("item_id", "id")
     )
@@ -295,6 +344,8 @@ def _build_contract_progress(period: MeasurementPeriod) -> tuple[dict[str, dict]
     for item_lines in grouped_lines.values():
         first_line = item_lines[0]
         item = first_line.item
+        stage_info = _resolve_stage_info(stage_context, item)
+        stage_code = stage_info["code"]
         previous = get_item_cumulative(period.project, item.id, period.number - 1)
         remaining = (item.qty_contracted or Decimal("0")) - previous
         effective_total = Decimal("0")
@@ -317,7 +368,7 @@ def _build_contract_progress(period: MeasurementPeriod) -> tuple[dict[str, dict]
                         "reference": period.ref_month.strftime("%m/%Y") if period.ref_month else "",
                         "start_date": period.start_date,
                         "end_date": period.end_date,
-                        "stage": _stage_code_from_eap(item.eap_code),
+                        "stage": stage_code,
                         "description": description,
                         "unit": item.unit.code if item.unit_id else "",
                         "quantity": _q_qty(excess_qty),
@@ -330,7 +381,8 @@ def _build_contract_progress(period: MeasurementPeriod) -> tuple[dict[str, dict]
 
         contracted_progress[item.eap_code] = {
             "item": item,
-            "stage": _stage_code_from_eap(item.eap_code),
+            "stage": stage_code,
+            "stage_name": stage_info["description"],
             "quantity": _q_qty(effective_total),
             "previous": _q_qty(previous),
             "cumulative": _q_qty(previous + effective_total),
@@ -440,7 +492,7 @@ def _write_measured_contract_progress_rows(
             target_sheet=target_sheet,
             columns=columns,
             row=row,
-            stage_value=progress["stage"],
+            stage_value=progress["stage_name"],
             item_code=item.eap_code,
             description=item.description,
             quantity_contracted=_q_qty(item.qty_contracted),
@@ -455,7 +507,8 @@ def _write_measured_contract_progress_rows(
     return filled_count, missing_eap, cells_written
 
 
-def update_sienge_sheet_for_period(workbook, project, period):
+def update_sienge_sheet_for_period(workbook, project, period, stage_context: dict | None = None):
+    stage_context = stage_context or _new_stage_context(project)
     contract_sheet = _find_contract_sheet(workbook)
     if contract_sheet is None:
         raise ValidationError("Template Sienge invalido: aba 'Itens de Contrato' nao encontrada.")
@@ -473,7 +526,7 @@ def update_sienge_sheet_for_period(workbook, project, period):
         if eap_code not in (None, ""):
             row_by_eap[str(eap_code).strip()] = row
 
-    contracted_progress, extra_entries, excess_entries = _build_contract_progress(period)
+    contracted_progress, extra_entries, excess_entries = _build_contract_progress(period, stage_context)
 
     _clear_measurement_sheet(target_sheet, capacity_end)
     target_sheet["H3"] = period.number
@@ -501,7 +554,13 @@ def update_sienge_sheet_for_period(workbook, project, period):
     return summary, extra_entries, excess_entries
 
 
-def _update_consolidated_item_sheet(workbook, items: list[BudgetItem], period_summaries: list[dict], capacity_end: int) -> None:
+def _update_consolidated_item_sheet(
+    workbook,
+    items: list[BudgetItem],
+    period_summaries: list[dict],
+    capacity_end: int,
+    stage_context: dict,
+) -> None:
     sheet = _find_consolidated_item_sheet(workbook)
     if sheet is None:
         return
@@ -526,7 +585,7 @@ def _update_consolidated_item_sheet(workbook, items: list[BudgetItem], period_su
         if qty_contracted > 0:
             percent = (executed_qty / qty_contracted).quantize(QTY_Q, rounding=ROUND_HALF_UP)
 
-        sheet.cell(row=row, column=1).value = _stage_code_from_eap(item.eap_code)
+        sheet.cell(row=row, column=1).value = _resolve_stage_info(stage_context, item)["description"]
         sheet.cell(row=row, column=2).value = item.eap_code
         sheet.cell(row=row, column=3).value = item.description
         sheet.cell(row=row, column=4).value = qty_contracted
@@ -654,6 +713,9 @@ def _build_error_message(message: str, summary_json: dict | None = None) -> str:
     missing = summary_json.get("missing_eap_list") or []
     if missing:
         warnings.append(f"EAPs ausentes: {', '.join(missing)}")
+    missing_stages = summary_json.get("missing_stage_prefixes") or []
+    if missing_stages:
+        warnings.append(f"Etapas ausentes: {', '.join(missing_stages)}")
     return " | ".join([message, *warnings]) if warnings else message
 
 
@@ -688,9 +750,10 @@ def _generate_workbook_for_periods(
         .filter(project=project, is_active=True)
         .order_by("eap_code", "id")
     )
-    stage_rows = _build_stage_rows(items)
+    stage_context = _new_stage_context(project)
+    stage_rows = _build_stage_rows(items, stage_context)
     _update_stage_sheet(workbook, stage_rows)
-    _, overflow_items, capacity_end = _update_contract_sheet(workbook, items)
+    _, overflow_items, capacity_end = _update_contract_sheet(workbook, items, stage_context)
 
     max_period_number = max([period.number for period in periods], default=12)
     for number in range(1, max_period_number + 1):
@@ -703,8 +766,8 @@ def _generate_workbook_for_periods(
     missing_eap_all: set[str] = set(overflow_items)
 
     for period in periods:
-        summary, extra_entries, excess_entries = update_sienge_sheet_for_period(workbook, project, period)
-        contracted_progress, _, _ = _build_contract_progress(period)
+        summary, extra_entries, excess_entries = update_sienge_sheet_for_period(workbook, project, period, stage_context)
+        contracted_progress, _, _ = _build_contract_progress(period, stage_context)
         summary["missing_eap_list"] = sorted(set(summary["missing_eap_list"]) | set(overflow_items))
         summary["missing_eap_count"] = len(summary["missing_eap_list"])
         period_summaries.append(
@@ -717,10 +780,11 @@ def _generate_workbook_for_periods(
         extras_rows.extend(excess_entries)
         missing_eap_all.update(summary["missing_eap_list"])
 
-    _update_consolidated_item_sheet(workbook, items, period_summaries, capacity_end)
+    _update_consolidated_item_sheet(workbook, items, period_summaries, capacity_end, stage_context)
     _update_consolidated_stage_sheet(workbook, stage_rows, period_summaries)
     _write_extras_sheet(workbook, extras_rows)
 
+    stage_warnings = _stage_warning_summary(stage_context)
     summary_json = {
         "period_count": len(periods),
         "periods": [item["summary"] for item in period_summaries],
@@ -729,6 +793,7 @@ def _generate_workbook_for_periods(
         "excess_filled_count": sum(item["summary"]["excess_filled_count"] for item in period_summaries),
         "missing_eap_count": len(missing_eap_all),
         "missing_eap_list": sorted(missing_eap_all),
+        **stage_warnings,
     }
     return workbook, summary_json
 

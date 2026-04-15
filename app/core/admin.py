@@ -4,7 +4,7 @@ from django.http import HttpResponseRedirect
 from django.urls import reverse
 
 from core.forms import ProjectAdminForm
-from core.models import Client, LocationTemplate, LocationTemplateItem, Project, ProjectLocation
+from core.models import Client, LocationTemplate, LocationTemplateItem, Project, ProjectLocation, ProjectStage
 from core.services import apply_location_template_to_project
 
 
@@ -52,6 +52,14 @@ class ProjectAdmin(admin.ModelAdmin):
 
 @admin.register(ProjectLocation)
 class ProjectLocationAdmin(admin.ModelAdmin):
+    list_display = ("project", "code", "name", "order_index", "is_active")
+    list_filter = ("project", "is_active")
+    search_fields = ("project__name", "code", "name")
+    ordering = ("project", "order_index", "code")
+
+
+@admin.register(ProjectStage)
+class ProjectStageAdmin(admin.ModelAdmin):
     list_display = ("project", "code", "name", "order_index", "is_active")
     list_filter = ("project", "is_active")
     search_fields = ("project__name", "code", "name")

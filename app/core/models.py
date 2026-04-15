@@ -58,6 +58,25 @@ class ProjectLocation(models.Model):
         return self.code
 
 
+class ProjectStage(models.Model):
+    project = models.ForeignKey("core.Project", on_delete=models.CASCADE, related_name="stages")
+    code = models.CharField(max_length=40)
+    name = models.CharField(max_length=255)
+    order_index = models.IntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["project", "code"], name="uniq_project_stage_code"),
+        ]
+        ordering = ["project_id", "order_index", "code"]
+
+    def __str__(self) -> str:
+        return f"{self.code} - {self.name}"
+
+
 class LocationTemplate(models.Model):
     name = models.CharField(max_length=255, unique=True)
 

@@ -7,7 +7,7 @@ from rest_framework.test import APIClient
 
 from billing.models import MeasurementLine, MeasurementLineKind, MeasurementPeriod
 from catalog.models import BudgetItem, Unit
-from core.models import Client, Project
+from core.models import Client, Project, ProjectStage
 from rdo.models import DailyWorkLog
 
 
@@ -31,6 +31,12 @@ class ApiReadOnlyTests(TestCase):
             qty_contracted=Decimal("100.000"),
             pu_material=Decimal("10.0000"),
             pu_labor=Decimal("5.0000"),
+        )
+        self.stage = ProjectStage.objects.create(
+            project=self.project,
+            code="1.1",
+            name="Infraestrutura elétrica",
+            order_index=10,
         )
         self.period = MeasurementPeriod.objects.create(
             project=self.project,
@@ -86,6 +92,19 @@ class ApiReadOnlyTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data["results"]), 1)
         self.assertEqual(response.data["results"][0]["eap_code"], "1.1")
+
+    def test_project_stages_can_be_filtered_by_project(self):
+        other_client = Client.objects.create(name="Cliente etapas")
+        other_project = Project.objects.create(name="Outra obra etapas", client=other_client)
+        ProjectStage.objects.create(project=other_project, code="9.9", name="Outra etapa")
+        self.api_client.force_authenticate(self.user)
+
+        response = self.api_client.get(reverse("api:projectstage-list"), {"project": self.project.id})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["results"][0]["code"], "1.1")
+        self.assertEqual(response.data["results"][0]["name"], "Infraestrutura elétrica")
 
     def test_measurement_period_totals_endpoint_returns_live_totals(self):
         self.api_client.force_authenticate(self.user)

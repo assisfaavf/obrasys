@@ -11,7 +11,7 @@ from openpyxl import Workbook, load_workbook
 from billing.models import MeasurementLine, MeasurementLineKind, MeasurementPeriod
 from billing.services.measurement_calc import finalize_period
 from catalog.models import BudgetItem, Discipline, Unit
-from core.models import Client, Project
+from core.models import Client, Project, ProjectStage
 from exports.models import ExportStatus, ExportType, MeasurementExport
 from exports.services.sienge_export import (
     generate_sienge_master,
@@ -648,6 +648,11 @@ class SiengeExportServiceTests(TestCase):
         self.assertEqual(get_measurement_sheet_name(10), "Medição 10")
 
     def test_generate_sienge_snapshot_with_contracted_extra_and_excess(self):
+        ProjectStage.objects.create(
+            project=self.project,
+            code="1.1",
+            name="Infraestrutura elétrica",
+        )
         item = BudgetItem.objects.create(
             project=self.project,
             eap_code="1.1.1",
@@ -696,16 +701,137 @@ class SiengeExportServiceTests(TestCase):
             self.assertIsNotNone(output_path)
 
             workbook = load_workbook(output_path)
+            stages_sheet = workbook["Etapas"]
+            self.assertEqual(stages_sheet["A6"].value, "1.1")
+            self.assertEqual(stages_sheet["B6"].value, "Infraestrutura elétrica")
             measurement_sheet = workbook["Medição 01"]
+            self.assertEqual(measurement_sheet["A6"].value, "Infraestrutura elétrica")
             self.assertEqual(Decimal(str(measurement_sheet["G6"].value)), Decimal("10.000"))
             self.assertEqual(Decimal(str(measurement_sheet["I6"].value)), Decimal("150.00"))
 
             extras_sheet = workbook["EXTRAS (Lançamentos)"]
+            self.assertEqual(extras_sheet["E2"].value, "EXTRA")
             self.assertEqual(extras_sheet["F2"].value, "Servico extra")
+            self.assertEqual(extras_sheet["E3"].value, "1.1")
             self.assertIn("1.1.1 - Alvenaria", extras_sheet["F3"].value)
             self.assertEqual(export_record.summary_json["items_filled_count"], 1)
             self.assertEqual(export_record.summary_json["extras_filled_count"], 1)
             self.assertEqual(export_record.summary_json["excess_filled_count"], 1)
+            self.assertEqual(export_record.summary_json["missing_stage_count"], 0)
+
+    def test_generate_sienge_snapshot_uses_project_stage_for_multiple_items_with_same_prefix(self):
+        ProjectStage.objects.create(
+            project=self.project,
+            code="1.1",
+            name="Infraestrutura elétrica",
+        )
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="1.1.14",
+            description="Quadro eletrico",
+            unit=self.unit,
+            qty_contracted=Decimal("10"),
+            pu_material=Decimal("4"),
+            pu_labor=Decimal("6"),
+        )
+        BudgetItem.objects.create(
+            project=self.project,
+            eap_code="1.1.15",
+            description="Circuito eletrico",
+            unit=self.unit,
+            qty_contracted=Decimal("5"),
+            pu_material=Decimal("3"),
+            pu_labor=Decimal("2"),
+        )
+        period = self._create_period(1, date(2026, 4, 1))
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("4"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-stage-snapshot-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=4)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                export_record, output_path = generate_sienge_snapshot(period.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            workbook = load_workbook(output_path)
+            self.assertEqual(workbook["Etapas"]["A6"].value, "1.1")
+            self.assertEqual(workbook["Etapas"]["B6"].value, "Infraestrutura elétrica")
+            self.assertIsNone(workbook["Etapas"]["A7"].value)
+            self.assertEqual(workbook["Itens de Contrato"]["A6"].value, "1.1")
+            self.assertEqual(workbook["Itens de Contrato"]["A7"].value, "1.1")
+            self.assertEqual(workbook["Medição 01"]["A6"].value, "Infraestrutura elétrica")
+            self.assertEqual(workbook["Medição Consolidada (Itens de C"]["A6"].value, "Infraestrutura elétrica")
+            self.assertEqual(workbook["Medição Consolidada (Etapas)"]["A6"].value, "1.1")
+            self.assertEqual(workbook["Medição Consolidada (Etapas)"]["B6"].value, "Infraestrutura elétrica")
+            self.assertEqual(export_record.summary_json["missing_stage_count"], 0)
+            self.assertEqual(export_record.summary_json["missing_stage_prefixes"], [])
+
+    def test_generate_sienge_snapshot_uses_prefix_fallback_and_logs_missing_stage(self):
+        item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="2.3",
+            description="Item sem etapa cadastrada",
+            unit=self.unit,
+            qty_contracted=Decimal("10"),
+            pu_material=Decimal("2"),
+            pu_labor=Decimal("3"),
+        )
+        period = self._create_period(1, date(2026, 4, 1))
+        MeasurementLine.objects.create(
+            period=period,
+            line_kind=MeasurementLineKind.CONTRACTED,
+            item=item,
+            qty_period=Decimal("4"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="sienge-stage-fallback-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_sienge_template(temp_root / "sienge_template.xlsx", capacity=4)
+            exports_dir = temp_root / "exports"
+            exports_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch(
+                "exports.services.sienge_export.get_template_path",
+                side_effect=self._template_side_effect(template_path),
+            ), patch(
+                "exports.services.sienge_export.get_exports_dir",
+                return_value=exports_dir,
+            ):
+                export_record, output_path = generate_sienge_snapshot(period.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            workbook = load_workbook(output_path)
+            self.assertEqual(workbook["Etapas"]["A6"].value, "2")
+            self.assertEqual(workbook["Etapas"]["B6"].value, "2")
+            self.assertEqual(workbook["Itens de Contrato"]["A6"].value, "2")
+            self.assertEqual(workbook["Medição 01"]["A6"].value, "2")
+            self.assertEqual(export_record.summary_json["missing_stage_count"], 1)
+            self.assertEqual(export_record.summary_json["missing_stage_prefixes"], ["2"])
+            self.assertEqual(
+                export_record.summary_json["items_with_missing_stage"],
+                [
+                    {
+                        "eap_code": "2.3",
+                        "stage_prefix": "2",
+                        "description": "Item sem etapa cadastrada",
+                    }
+                ],
+            )
+            self.assertIn("Etapas ausentes: 2", export_record.error_message)
 
     def test_generate_sienge_snapshot_writes_real_template_individual_sheet(self):
         item = BudgetItem.objects.create(
@@ -797,6 +923,11 @@ class SiengeExportServiceTests(TestCase):
             self.assertEqual(export_record.summary_json["periods"][0]["measurement_cells_written"], ["G6"])
 
     def test_generate_sienge_master_with_two_measurements(self):
+        ProjectStage.objects.create(
+            project=self.project,
+            code="2.1",
+            name="Cabeamento",
+        )
         item = BudgetItem.objects.create(
             project=self.project,
             eap_code="2.1.1",
@@ -841,12 +972,19 @@ class SiengeExportServiceTests(TestCase):
             self.assertIsNotNone(output_path)
 
             workbook = load_workbook(output_path)
+            self.assertEqual(workbook["Etapas"]["A6"].value, "2.1")
+            self.assertEqual(workbook["Etapas"]["B6"].value, "Cabeamento")
+            self.assertEqual(workbook["Medição 01"]["A6"].value, "Cabeamento")
+            self.assertEqual(workbook["Medição 02"]["A6"].value, "Cabeamento")
             self.assertEqual(Decimal(str(workbook["Medição 01"]["G6"].value)), Decimal("4.000"))
             self.assertEqual(Decimal(str(workbook["Medição 02"]["G6"].value)), Decimal("3.000"))
+            self.assertEqual(workbook["Medição Consolidada (Etapas)"]["B6"].value, "Cabeamento")
+            self.assertEqual(workbook["Medição Consolidada (Itens de C"]["A6"].value, "Cabeamento")
             self.assertEqual(
                 Decimal(str(workbook["Medição Consolidada (Itens de C"]["G6"].value)),
                 Decimal("7.000"),
             )
+            self.assertEqual(export_record.summary_json["missing_stage_count"], 0)
 
     def test_generate_sienge_master_writes_each_period_to_its_individual_sheet(self):
         item = BudgetItem.objects.create(
