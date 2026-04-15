@@ -23,3 +23,12 @@ class ProjectLocationTemplateForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields["location_template"].required = False
         self.fields["location_template"].queryset = self.fields["location_template"].queryset.order_by("name")
+
+
+class ProjectStageCsvImportForm(forms.Form):
+    project = forms.ModelChoiceField(
+        queryset=Project.objects.order_by("name"),
+        required=True,
+        label="Projeto",
+    )
+    csv_file = forms.FileField(required=True, label="Arquivo CSV")

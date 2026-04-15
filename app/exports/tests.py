@@ -704,6 +704,7 @@ class SiengeExportServiceTests(TestCase):
             stages_sheet = workbook["Etapas"]
             self.assertEqual(stages_sheet["A6"].value, "1.1")
             self.assertEqual(stages_sheet["B6"].value, "Infraestrutura elétrica")
+            self.assertEqual(workbook["Itens de Contrato"]["A6"].value, "Infraestrutura elétrica")
             measurement_sheet = workbook["Medição 01"]
             self.assertEqual(measurement_sheet["A6"].value, "Infraestrutura elétrica")
             self.assertEqual(Decimal(str(measurement_sheet["G6"].value)), Decimal("10.000"))
@@ -771,8 +772,8 @@ class SiengeExportServiceTests(TestCase):
             self.assertEqual(workbook["Etapas"]["A6"].value, "1.1")
             self.assertEqual(workbook["Etapas"]["B6"].value, "Infraestrutura elétrica")
             self.assertIsNone(workbook["Etapas"]["A7"].value)
-            self.assertEqual(workbook["Itens de Contrato"]["A6"].value, "1.1")
-            self.assertEqual(workbook["Itens de Contrato"]["A7"].value, "1.1")
+            self.assertEqual(workbook["Itens de Contrato"]["A6"].value, "Infraestrutura elétrica")
+            self.assertEqual(workbook["Itens de Contrato"]["A7"].value, "Infraestrutura elétrica")
             self.assertEqual(workbook["Medição 01"]["A6"].value, "Infraestrutura elétrica")
             self.assertEqual(workbook["Medição Consolidada (Itens de C"]["A6"].value, "Infraestrutura elétrica")
             self.assertEqual(workbook["Medição Consolidada (Etapas)"]["A6"].value, "1.1")

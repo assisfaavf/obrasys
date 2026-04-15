@@ -275,11 +275,11 @@ def _update_contract_sheet(workbook, items: list[BudgetItem], stage_context: dic
             overflow.append(item.eap_code)
             continue
 
-        stage_code = _resolve_stage_info(stage_context, item)["code"]
+        stage_description = _resolve_stage_info(stage_context, item)["description"]
         unit_total = _q_money((item.pu_material or Decimal("0")) + (item.pu_labor or Decimal("0")))
         qty_contracted = _q_qty(item.qty_contracted)
 
-        sheet.cell(row=row, column=1).value = stage_code
+        sheet.cell(row=row, column=1).value = stage_description
         sheet.cell(row=row, column=2).value = item.eap_code
         sheet.cell(row=row, column=3).value = item.description
         sheet.cell(row=row, column=4).value = item.unit.code if item.unit_id else ""
