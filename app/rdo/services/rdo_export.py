@@ -158,13 +158,37 @@ def _merge_row_range(ws: Worksheet, row: int, start_col: int, end_col: int) -> N
         ws.merge_cells(str(merge_range))
 
 
+def _insert_rows_preserving_merges(ws: Worksheet, row: int, amount: int) -> None:
+    merged_ranges = [CellRange(str(merged_range)) for merged_range in ws.merged_cells.ranges]
+    for merged_range in list(ws.merged_cells.ranges):
+        ws.unmerge_cells(str(merged_range))
+
+    ws.insert_rows(row, amount)
+
+    for merged_range in merged_ranges:
+        min_row = merged_range.min_row
+        max_row = merged_range.max_row
+        if merged_range.min_row >= row:
+            min_row += amount
+            max_row += amount
+        elif merged_range.max_row >= row:
+            max_row += amount
+
+        ws.merge_cells(
+            start_row=min_row,
+            start_column=merged_range.min_col,
+            end_row=max_row,
+            end_column=merged_range.max_col,
+        )
+
+
 def _ensure_block_rows(ws: Worksheet, start_row: int, available_rows: int, needed_rows: int, max_col: int = 6) -> int:
     extra_rows = max(0, needed_rows - available_rows)
     if not extra_rows:
         return 0
 
     insert_at = start_row + available_rows
-    ws.insert_rows(insert_at, extra_rows)
+    _insert_rows_preserving_merges(ws, insert_at, extra_rows)
     source_row = insert_at - 1
     for row in range(insert_at, insert_at + extra_rows):
         _copy_row_format(ws, source_row, row, max_col=max_col)

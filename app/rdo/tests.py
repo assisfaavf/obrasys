@@ -248,6 +248,22 @@ class RdoExportTests(TestCase):
         workbook.active.title = "Livro de Ordem"
         daily_sheet = workbook.create_sheet("DiÃ¡rio de Obras")
         daily_sheet["A44"] = "Materiais aplicados"
+        for row in range(23, 29):
+            daily_sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
+            daily_sheet.merge_cells(start_row=row, start_column=5, end_row=row, end_column=6)
+        daily_sheet.merge_cells(start_row=29, start_column=1, end_row=29, end_column=6)
+        for row in range(32, 36):
+            daily_sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+            daily_sheet.merge_cells(start_row=row, start_column=4, end_row=row, end_column=6)
+        daily_sheet.merge_cells(start_row=36, start_column=1, end_row=36, end_column=6)
+        for row in range(38, 43):
+            daily_sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
+            daily_sheet.merge_cells(start_row=row, start_column=5, end_row=row, end_column=6)
+        daily_sheet.merge_cells(start_row=43, start_column=1, end_row=43, end_column=6)
+        daily_sheet.merge_cells(start_row=44, start_column=1, end_row=44, end_column=6)
+        for row in range(46, 51):
+            daily_sheet.merge_cells(start_row=row, start_column=2, end_row=row, end_column=4)
+            daily_sheet.merge_cells(start_row=row, start_column=5, end_row=row, end_column=6)
         photo_sheet = workbook.create_sheet("RelatÃ³rio FotogrÃ¡fico")
         photo_sheet["A1"] = "Template fotografico preservado"
         logo_path = path.parent / "logo.png"
@@ -328,6 +344,71 @@ class RdoExportTests(TestCase):
         self.assertEqual(export_record.export_type, ExportType.RDO_XLSX)
         self.assertIsNone(output_path)
         self.assertIn("missing", export_record.error_message)
+
+    def test_generate_rdo_xlsx_inserts_rows_when_sections_exceed_template_capacity(self):
+        for index in range(1, 7):
+            DailyWorkActivityEntry.objects.create(
+                daily_log=self.daily_log,
+                description=f"Atividade extra {index}",
+                location=self.location,
+                discipline=self.discipline,
+                notes=f"Nota atividade {index}",
+            )
+        for index in range(1, 5):
+            DailyWorkOccurrence.objects.create(
+                daily_log=self.daily_log,
+                occurrence_type=OccurrenceType.OUTRO,
+                description=f"Ocorrencia extra {index}",
+            )
+        for index in range(1, 5):
+            DailyWorkTeamEntry.objects.create(
+                daily_log=self.daily_log,
+                team_name=f"ZZ Equipe {index:02d}",
+                worker_count=index,
+                location=self.location,
+                activity_description=f"Atividade equipe {index}",
+            )
+        for index in range(1, 6):
+            DailyWorkMaterialEntry.objects.create(
+                daily_log=self.daily_log,
+                item=self.material_item,
+                location=self.location,
+                quantity=Decimal(f"{index}.000"),
+                notes=f"Material extra {index}",
+            )
+
+        with tempfile.TemporaryDirectory(prefix="rdo-xlsx-overflow-") as tmp_dir:
+            temp_root = Path(tmp_dir)
+            template_path = self._create_template(temp_root / "modelo-de-diario-de-obras-2-0.xlsx")
+            exports_dir = temp_root / "exports"
+
+            with patch("rdo.services.rdo_export.get_template_path", return_value=template_path), patch(
+                "rdo.services.rdo_export.get_exports_dir", return_value=exports_dir
+            ):
+                export_record, output_path = generate_rdo_xlsx(self.daily_log.id)
+
+            self.assertEqual(export_record.status, ExportStatus.OK)
+            daily_sheet = load_workbook(output_path)["DiÃ¡rio de Obras"]
+
+            self.assertEqual(daily_sheet["A29"].value, "Atividade extra 6")
+            self.assertEqual(daily_sheet["C29"].value, "P1")
+            self.assertEqual(daily_sheet["D29"].value, "1 - Eletrica")
+            self.assertEqual(daily_sheet["E29"].value, "Nota atividade 6")
+            self.assertEqual(daily_sheet["A37"].value, "Ocorrencia extra 4")
+            self.assertEqual(daily_sheet["D37"].value, "Outro")
+            self.assertEqual(daily_sheet["A40"].value, "Equipe")
+            self.assertEqual(daily_sheet["C40"].value, "Quantidade de funcionários")
+            self.assertEqual(daily_sheet["A45"].value, "ZZ Equipe 04")
+            self.assertEqual(daily_sheet["C45"].value, 4)
+            self.assertEqual(daily_sheet["E45"].value, "Atividade equipe 4")
+            self.assertEqual(daily_sheet["A47"].value, "Materiais aplicados")
+            self.assertEqual(daily_sheet["A54"].value, "MAT-001")
+            self.assertEqual(daily_sheet["B54"].value, "Cimento CP II - P1 - Material extra 5")
+            self.assertEqual(daily_sheet["E54"].value, "5.000 - saco")
+            self.assertEqual(export_record.summary_json["activity_entries_count"], 7)
+            self.assertEqual(export_record.summary_json["occurrences_count"], 5)
+            self.assertEqual(export_record.summary_json["team_entries_count"], 5)
+            self.assertEqual(export_record.summary_json["material_entries_count"], 6)
 
 
 class RdoViewTests(TestCase):
