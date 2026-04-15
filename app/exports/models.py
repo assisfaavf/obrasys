@@ -7,6 +7,7 @@ class ExportType(models.TextChoices):
     DOCX_TIMBRADO = "DOCX_TIMBRADO", "Docx timbrado"
     PDF_TIMBRADO = "PDF_TIMBRADO", "Pdf timbrado"
     XLSX_BOLETIM = "XLSX_BOLETIM", "Xlsx boletim"
+    RDO_XLSX = "RDO_XLSX", "Rdo xlsx"
 
 
 class ExportStatus(models.TextChoices):

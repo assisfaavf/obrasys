@@ -4,3 +4,4 @@ django-environ
 openpyxl
 Pillow
 python-docx
+djangorestframework

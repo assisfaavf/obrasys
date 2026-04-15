@@ -1,0 +1,267 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Diário de Obras {{ daily_log.log_date|date:"d/m/Y" }}{% endblock %}
+
+{% block content %}
+  <h1>Diário de Obras - {{ project.name }} - {{ daily_log.log_date|date:"d/m/Y" }}</h1>
+
+  <div class="actions">
+    <a href="{% url 'rdo:project_rdo_list' project.id %}">Voltar para RDO</a>
+    <a href="{% url 'rdo:work_order' project.id %}">Livro de Ordem</a>
+    {% if rdo_template_available %}
+      <a href="{% url 'rdo:rdo_export_xlsx' daily_log.id %}">Exportar RDO Excel</a>
+    {% else %}
+      <span class="errors">{{ rdo_template_error }}</span>
+    {% endif %}
+  </div>
+
+  <form method="post">
+    {% csrf_token %}
+
+    <div class="card">
+      <h2>Dados gerais do diário</h2>
+      {{ form.non_field_errors }}
+      {{ form.as_p }}
+    </div>
+
+    <div class="card" data-formset data-prefix="teams">
+      <h2>Equipes</h2>
+      {{ team_formset.non_form_errors }}
+      {{ team_formset.management_form }}
+      <table>
+        <thead>
+          <tr>
+            <th>Equipe</th>
+            <th>Quantidade de funcionários</th>
+            <th>Local</th>
+            <th>Atividade/Serviço executado</th>
+            <th>Excluir</th>
+          </tr>
+        </thead>
+        <tbody data-formset-body>
+          {% for entry_form in team_formset %}
+            <tr data-form-row data-existing="{{ entry_form.instance.pk|yesno:'true,false' }}">
+              <td>{{ entry_form.id }}{{ entry_form.team_name.errors }}{{ entry_form.team_name }}</td>
+              <td>{{ entry_form.worker_count.errors }}{{ entry_form.worker_count }}</td>
+              <td>{{ entry_form.location.errors }}{{ entry_form.location }}</td>
+              <td>{{ entry_form.activity_description.errors }}{{ entry_form.activity_description }}</td>
+              <td>
+                <span style="display: none;">{{ entry_form.DELETE }}</span>
+                <button type="button" data-remove-row>Excluir</button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <button type="button" data-add-row>Adicionar linha</button>
+      <script type="text/template" id="teams-empty-form">
+        <tr data-form-row data-existing="false">
+          <td>{{ team_formset.empty_form.id }}{{ team_formset.empty_form.team_name.errors }}{{ team_formset.empty_form.team_name }}</td>
+          <td>{{ team_formset.empty_form.worker_count.errors }}{{ team_formset.empty_form.worker_count }}</td>
+          <td>{{ team_formset.empty_form.location.errors }}{{ team_formset.empty_form.location }}</td>
+          <td>{{ team_formset.empty_form.activity_description.errors }}{{ team_formset.empty_form.activity_description }}</td>
+          <td>
+            <span style="display: none;">{{ team_formset.empty_form.DELETE }}</span>
+            <button type="button" data-remove-row>Excluir</button>
+          </td>
+        </tr>
+      </script>
+    </div>
+
+    <div class="card" data-formset data-prefix="activities">
+      <h2>Atividades executadas</h2>
+      {{ activity_formset.non_form_errors }}
+      {{ activity_formset.management_form }}
+      <table>
+        <thead>
+          <tr>
+            <th>Descrição</th>
+            <th>Local</th>
+            <th>Disciplina</th>
+            <th>Observações</th>
+            <th>Excluir</th>
+          </tr>
+        </thead>
+        <tbody data-formset-body>
+          {% for entry_form in activity_formset %}
+            <tr data-form-row data-existing="{{ entry_form.instance.pk|yesno:'true,false' }}">
+              <td>{{ entry_form.id }}{{ entry_form.description.errors }}{{ entry_form.description }}</td>
+              <td>{{ entry_form.location.errors }}{{ entry_form.location }}</td>
+              <td>{{ entry_form.discipline.errors }}{{ entry_form.discipline }}</td>
+              <td>{{ entry_form.notes.errors }}{{ entry_form.notes }}</td>
+              <td>
+                <span style="display: none;">{{ entry_form.DELETE }}</span>
+                <button type="button" data-remove-row>Excluir</button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <button type="button" data-add-row>Adicionar linha</button>
+      <script type="text/template" id="activities-empty-form">
+        <tr data-form-row data-existing="false">
+          <td>{{ activity_formset.empty_form.id }}{{ activity_formset.empty_form.description.errors }}{{ activity_formset.empty_form.description }}</td>
+          <td>{{ activity_formset.empty_form.location.errors }}{{ activity_formset.empty_form.location }}</td>
+          <td>{{ activity_formset.empty_form.discipline.errors }}{{ activity_formset.empty_form.discipline }}</td>
+          <td>{{ activity_formset.empty_form.notes.errors }}{{ activity_formset.empty_form.notes }}</td>
+          <td>
+            <span style="display: none;">{{ activity_formset.empty_form.DELETE }}</span>
+            <button type="button" data-remove-row>Excluir</button>
+          </td>
+        </tr>
+      </script>
+    </div>
+
+    <div class="card" data-formset data-prefix="occurrences">
+      <h2>Ocorrências</h2>
+      {{ occurrence_formset.non_form_errors }}
+      {{ occurrence_formset.management_form }}
+      <table>
+        <thead>
+          <tr>
+            <th>Tipo</th>
+            <th>Descrição</th>
+            <th>Observações</th>
+            <th>Excluir</th>
+          </tr>
+        </thead>
+        <tbody data-formset-body>
+          {% for entry_form in occurrence_formset %}
+            <tr data-form-row data-existing="{{ entry_form.instance.pk|yesno:'true,false' }}">
+              <td>{{ entry_form.id }}{{ entry_form.occurrence_type.errors }}{{ entry_form.occurrence_type }}</td>
+              <td>{{ entry_form.description.errors }}{{ entry_form.description }}</td>
+              <td>{{ entry_form.notes.errors }}{{ entry_form.notes }}</td>
+              <td>
+                <span style="display: none;">{{ entry_form.DELETE }}</span>
+                <button type="button" data-remove-row>Excluir</button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <button type="button" data-add-row>Adicionar linha</button>
+      <script type="text/template" id="occurrences-empty-form">
+        <tr data-form-row data-existing="false">
+          <td>{{ occurrence_formset.empty_form.id }}{{ occurrence_formset.empty_form.occurrence_type.errors }}{{ occurrence_formset.empty_form.occurrence_type }}</td>
+          <td>{{ occurrence_formset.empty_form.description.errors }}{{ occurrence_formset.empty_form.description }}</td>
+          <td>{{ occurrence_formset.empty_form.notes.errors }}{{ occurrence_formset.empty_form.notes }}</td>
+          <td>
+            <span style="display: none;">{{ occurrence_formset.empty_form.DELETE }}</span>
+            <button type="button" data-remove-row>Excluir</button>
+          </td>
+        </tr>
+      </script>
+    </div>
+
+    <div class="card" data-formset data-prefix="materials">
+      <h2>Materiais aplicados</h2>
+      {{ material_formset.non_form_errors }}
+      {{ material_formset.management_form }}
+      <table>
+        <thead>
+          <tr>
+            <th>Material</th>
+            <th>Local</th>
+            <th>Quantidade</th>
+            <th>Unidade</th>
+            <th>Observações</th>
+            <th>Excluir</th>
+          </tr>
+        </thead>
+        <tbody data-formset-body>
+          {% for entry_form in material_formset %}
+            <tr data-form-row data-existing="{{ entry_form.instance.pk|yesno:'true,false' }}">
+              <td>{{ entry_form.id }}{{ entry_form.item.errors }}{{ entry_form.item }}</td>
+              <td>{{ entry_form.location.errors }}{{ entry_form.location }}</td>
+              <td>{{ entry_form.quantity.errors }}{{ entry_form.quantity }}</td>
+              <td>{{ entry_form.unit_snapshot.errors }}{{ entry_form.unit_snapshot }}</td>
+              <td>{{ entry_form.notes.errors }}{{ entry_form.notes }}</td>
+              <td>
+                <span style="display: none;">{{ entry_form.DELETE }}</span>
+                <button type="button" data-remove-row>Excluir</button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <button type="button" data-add-row>Adicionar linha</button>
+      <script type="text/template" id="materials-empty-form">
+        <tr data-form-row data-existing="false">
+          <td>{{ material_formset.empty_form.id }}{{ material_formset.empty_form.item.errors }}{{ material_formset.empty_form.item }}</td>
+          <td>{{ material_formset.empty_form.location.errors }}{{ material_formset.empty_form.location }}</td>
+          <td>{{ material_formset.empty_form.quantity.errors }}{{ material_formset.empty_form.quantity }}</td>
+          <td>{{ material_formset.empty_form.unit_snapshot.errors }}{{ material_formset.empty_form.unit_snapshot }}</td>
+          <td>{{ material_formset.empty_form.notes.errors }}{{ material_formset.empty_form.notes }}</td>
+          <td>
+            <span style="display: none;">{{ material_formset.empty_form.DELETE }}</span>
+            <button type="button" data-remove-row>Excluir</button>
+          </td>
+        </tr>
+      </script>
+    </div>
+
+    <button type="submit">Salvar diário</button>
+  </form>
+
+  {{ material_units|json_script:"material-units" }}
+  <script>
+    (function () {
+      var materialUnitsElement = document.getElementById("material-units");
+      var materialUnits = materialUnitsElement ? JSON.parse(materialUnitsElement.textContent) : {};
+
+      function refreshMaterialUnit(select) {
+        var row = select.closest("[data-form-row]");
+        if (!row) {
+          return;
+        }
+        var unitInput = row.querySelector("[data-material-unit]");
+        if (!unitInput) {
+          return;
+        }
+        unitInput.value = materialUnits[select.value] || "";
+      }
+
+      function bindRow(row) {
+        var removeButton = row.querySelector("[data-remove-row]");
+        if (removeButton) {
+          removeButton.addEventListener("click", function () {
+            var deleteInput = row.querySelector('input[type="checkbox"][name$="-DELETE"]');
+            if (deleteInput && row.dataset.existing === "true") {
+              deleteInput.checked = true;
+              row.style.display = "none";
+            } else {
+              row.remove();
+            }
+          });
+        }
+
+        row.querySelectorAll("[data-material-item]").forEach(function (select) {
+          select.addEventListener("change", function () {
+            refreshMaterialUnit(select);
+          });
+          refreshMaterialUnit(select);
+        });
+      }
+
+      document.querySelectorAll("[data-formset]").forEach(function (section) {
+        var prefix = section.dataset.prefix;
+        var body = section.querySelector("[data-formset-body]");
+        var totalInput = document.getElementById("id_" + prefix + "-TOTAL_FORMS");
+        var template = document.getElementById(prefix + "-empty-form");
+        var addButton = section.querySelector("[data-add-row]");
+
+        body.querySelectorAll("[data-form-row]").forEach(bindRow);
+
+        if (addButton && totalInput && template) {
+          addButton.addEventListener("click", function () {
+            var index = parseInt(totalInput.value, 10);
+            var rowHtml = template.innerHTML.replace(/__prefix__/g, index);
+            body.insertAdjacentHTML("beforeend", rowHtml);
+            totalInput.value = index + 1;
+            bindRow(body.lastElementChild);
+          });
+        }
+      });
+    })();
+  </script>
+{% endblock %}
