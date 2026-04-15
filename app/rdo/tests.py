@@ -208,6 +208,7 @@ class RdoExportTests(TestCase):
             code="P1",
             name="Pavimento 1",
         )
+        self.discipline = Discipline.objects.create(name="Eletrica", code="1")
         DailyWorkTeamEntry.objects.create(
             daily_log=self.daily_log,
             team_name="Equipe Civil",
@@ -218,6 +219,9 @@ class RdoExportTests(TestCase):
         DailyWorkActivityEntry.objects.create(
             daily_log=self.daily_log,
             description="Execucao de alvenaria",
+            location=self.location,
+            discipline=self.discipline,
+            notes="Frente liberada",
         )
         DailyWorkOccurrence.objects.create(
             daily_log=self.daily_log,
@@ -242,12 +246,13 @@ class RdoExportTests(TestCase):
     def _create_template(self, path: Path) -> Path:
         workbook = Workbook()
         workbook.active.title = "Livro de Ordem"
-        workbook.create_sheet("DiÃ¡rio de Obras")
-        workbook.create_sheet("RelatÃ³rio FotogrÃ¡fico")
-        workbook["RelatÃ³rio FotogrÃ¡fico"]["A1"] = "Template fotografico preservado"
+        daily_sheet = workbook.create_sheet("DiÃ¡rio de Obras")
+        daily_sheet["A44"] = "Materiais aplicados"
+        photo_sheet = workbook.create_sheet("RelatÃ³rio FotogrÃ¡fico")
+        photo_sheet["A1"] = "Template fotografico preservado"
         logo_path = path.parent / "logo.png"
         PilImage.new("RGBA", (867, 288), (0, 76, 180, 255)).save(logo_path)
-        workbook["RelatÃ³rio FotogrÃ¡fico"].add_image(ExcelImage(logo_path), "J1")
+        photo_sheet.add_image(ExcelImage(logo_path), "J1")
         workbook.save(path)
         return path
 
@@ -289,16 +294,19 @@ class RdoExportTests(TestCase):
             self.assertEqual(daily_sheet["B11"].value, "Mestre de Obras")
             self.assertEqual(daily_sheet["B17"].value, "x")
             self.assertEqual(daily_sheet["A23"].value, "Execucao de alvenaria")
+            self.assertEqual(daily_sheet["C23"].value, "P1")
+            self.assertEqual(daily_sheet["D23"].value, "1 - Eletrica")
+            self.assertEqual(daily_sheet["E23"].value, "Frente liberada")
             self.assertEqual(daily_sheet["A32"].value, "Visita tecnica")
             self.assertEqual(daily_sheet["D32"].value, "Visita")
             self.assertEqual(daily_sheet["A38"].value, "Equipe")
-            self.assertEqual(daily_sheet["B38"].value, "Quantidade")
-            self.assertEqual(daily_sheet["C38"].value, "Local")
-            self.assertEqual(daily_sheet["D38"].value, "Atividade/Serviço executado")
+            self.assertEqual(daily_sheet["C38"].value, "Quantidade")
+            self.assertEqual(daily_sheet["D38"].value, "Local")
+            self.assertEqual(daily_sheet["E38"].value, "Atividade/Serviço executado")
             self.assertEqual(daily_sheet["A39"].value, "Equipe Civil")
-            self.assertEqual(daily_sheet["B39"].value, 5)
-            self.assertEqual(daily_sheet["C39"].value, "P1")
-            self.assertEqual(daily_sheet["D39"].value, "Execucao de alvenaria")
+            self.assertEqual(daily_sheet["C39"].value, 5)
+            self.assertEqual(daily_sheet["D39"].value, "P1")
+            self.assertEqual(daily_sheet["E39"].value, "Execucao de alvenaria")
             self.assertEqual(daily_sheet["A44"].value, "Materiais aplicados")
             self.assertEqual(daily_sheet["A46"].value, "MAT-001")
             self.assertEqual(daily_sheet["B46"].value, "Cimento CP II - Materiais da alvenaria")

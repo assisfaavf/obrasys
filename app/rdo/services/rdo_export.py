@@ -286,9 +286,10 @@ def fill_daily_log_sheet(workbook, daily_log: DailyWorkLog) -> None:
     for row in range(activity_start, activity_start + max(6, len(activity_entries))):
         _clear_row(ws, row)
     for row, entry in enumerate(activity_entries, start=activity_start):
-        observation = _join_parts(entry.location, entry.discipline, entry.notes)
         _write(ws, row, 1, entry.description)
-        _write(ws, row, 4, observation)
+        _write(ws, row, 3, _text(entry.location))
+        _write(ws, row, 4, _text(entry.discipline))
+        _write(ws, row, 5, entry.notes)
 
     for row in range(occurrence_start, occurrence_start + max(4, len(occurrence_entries))):
         _clear_row(ws, row)
@@ -299,21 +300,21 @@ def fill_daily_log_sheet(workbook, daily_log: DailyWorkLog) -> None:
     team_header_row = team_start - 1
     for row in range(team_header_row, team_start + max(4, len(team_entries))):
         _unmerge_single_row(ws, row)
-        _merge_row_range(ws, row, 4, 6)
+        _merge_row_range(ws, row, 1, 2)
+        _merge_row_range(ws, row, 5, 6)
     _write(ws, team_header_row, 1, "Equipe")
-    _write(ws, team_header_row, 2, "Quantidade")
-    _write(ws, team_header_row, 3, "Local")
-    _write(ws, team_header_row, 4, "Atividade/Serviço executado")
+    _write(ws, team_header_row, 3, "Quantidade")
+    _write(ws, team_header_row, 4, "Local")
+    _write(ws, team_header_row, 5, "Atividade/Serviço executado")
 
     for row in range(team_start, team_start + max(4, len(team_entries))):
         _clear_row(ws, row)
     for row, entry in enumerate(team_entries, start=team_start):
         _write(ws, row, 1, entry.team_name)
-        _write(ws, row, 2, entry.worker_count)
-        _write(ws, row, 3, _text(entry.location))
-        _write(ws, row, 4, entry.activity_description)
+        _write(ws, row, 3, entry.worker_count)
+        _write(ws, row, 4, _text(entry.location))
+        _write(ws, row, 5, entry.activity_description)
 
-    _write(ws, material_heading_row, 1, "Materiais aplicados")
     _write(ws, material_heading_row + 1, 1, "Código")
     _write(ws, material_heading_row + 1, 2, "Descrição")
     _write(ws, material_heading_row + 1, 5, "Quantidade / Unidade")
