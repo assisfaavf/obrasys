@@ -1,7 +1,21 @@
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from core.models import LocationTemplate, Project, ProjectLocation
+from core.models import LocationTemplate, Project, ProjectLocation, ProjectStage
+
+
+def get_stage_prefix_from_eap(eap_code) -> str:
+    text = str(eap_code or "").strip()
+    if "." not in text:
+        return text
+    return text.rsplit(".", 1)[0]
+
+
+def resolve_project_stage(project: Project, eap_code) -> ProjectStage | None:
+    prefix = get_stage_prefix_from_eap(eap_code)
+    if not prefix or project is None:
+        return None
+    return ProjectStage.objects.filter(project=project, code=prefix, is_active=True).first()
 
 
 @transaction.atomic

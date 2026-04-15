@@ -3,8 +3,8 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.urls import reverse
 
-from core.models import Client, LocationTemplate, LocationTemplateItem, Project, ProjectLocation
-from core.services import apply_location_template_to_project
+from core.models import Client, LocationTemplate, LocationTemplateItem, Project, ProjectLocation, ProjectStage
+from core.services import apply_location_template_to_project, get_stage_prefix_from_eap, resolve_project_stage
 
 
 class LocationTemplateServiceTests(TestCase):
@@ -35,6 +35,39 @@ class LocationTemplateServiceTests(TestCase):
     def test_apply_location_template_requires_selected_template(self):
         with self.assertRaises(ValidationError):
             apply_location_template_to_project(project=self.project)
+
+
+class ProjectStageServiceTests(TestCase):
+    def setUp(self):
+        self.client_obj = Client.objects.create(name="Cliente Etapas")
+        self.project = Project.objects.create(name="Projeto Etapas", client=self.client_obj)
+
+    def test_get_stage_prefix_from_eap_removes_last_block(self):
+        self.assertEqual(get_stage_prefix_from_eap("1.1.14"), "1.1")
+        self.assertEqual(get_stage_prefix_from_eap("6.6.3"), "6.6")
+        self.assertEqual(get_stage_prefix_from_eap("2.3"), "2")
+        self.assertEqual(get_stage_prefix_from_eap("5"), "5")
+        self.assertEqual(get_stage_prefix_from_eap(None), "")
+
+    def test_resolve_project_stage_returns_active_stage_by_prefix(self):
+        stage = ProjectStage.objects.create(
+            project=self.project,
+            code="1.1",
+            name="Infraestrutura elétrica",
+        )
+
+        self.assertEqual(resolve_project_stage(self.project, "1.1.14"), stage)
+
+    def test_resolve_project_stage_ignores_missing_or_inactive_stage(self):
+        ProjectStage.objects.create(
+            project=self.project,
+            code="6.6",
+            name="Gás",
+            is_active=False,
+        )
+
+        self.assertIsNone(resolve_project_stage(self.project, "6.6.3"))
+        self.assertIsNone(resolve_project_stage(self.project, "9.1.1"))
 
 
 class ProjectDetailLocationTemplateTests(TestCase):

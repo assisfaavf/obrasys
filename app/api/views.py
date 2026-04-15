@@ -5,7 +5,7 @@ from rest_framework.response import Response
 
 from billing.models import MeasurementPeriod
 from catalog.models import BudgetItem
-from core.models import Project
+from core.models import Project, ProjectStage
 from rdo.models import DailyWorkLog
 
 from api.serializers import (
@@ -14,6 +14,7 @@ from api.serializers import (
     MeasurementPeriodSerializer,
     MeasurementPeriodTotalsSerializer,
     ProjectSerializer,
+    ProjectStageSerializer,
 )
 
 
@@ -42,6 +43,21 @@ class BudgetItemViewSet(viewsets.ReadOnlyModelViewSet):
             "eap_code",
             "id",
         )
+        project_id = self.request.query_params.get("project")
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() in {"1", "true", "yes", "sim"})
+        return queryset
+
+
+class ProjectStageViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = ProjectStageSerializer
+
+    def get_queryset(self):
+        queryset = ProjectStage.objects.select_related("project").order_by("project_id", "order_index", "code", "id")
         project_id = self.request.query_params.get("project")
         if project_id:
             queryset = queryset.filter(project_id=project_id)
