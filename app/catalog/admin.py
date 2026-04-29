@@ -2,7 +2,7 @@ import json
 
 from django.contrib import admin
 from django.contrib import messages
-from django.http import HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
 from django.urls import path, reverse
 from django.utils.html import format_html
@@ -21,6 +21,8 @@ from catalog.models import (
     Unit,
 )
 from catalog.services.budget_import import apply_import_job, create_preview_job
+from catalog.services.budget_import import IMPORT_TEMPLATE_NAME
+from utils.paths import get_template_path
 
 
 class BudgetItemAdditionalMaterialInline(admin.TabularInline):
@@ -102,6 +104,11 @@ class BudgetImportJobAdmin(admin.ModelAdmin):
                 name="catalog_budgetimportjob_new_import",
             ),
             path(
+                "download-template/",
+                self.admin_site.admin_view(self.download_template_view),
+                name="catalog_budgetimportjob_download_template",
+            ),
+            path(
                 "<int:job_id>/apply/",
                 self.admin_site.admin_view(self.apply_import_view),
                 name="catalog_budgetimportjob_apply_import",
@@ -152,6 +159,23 @@ class BudgetImportJobAdmin(admin.ModelAdmin):
             "form": form,
         }
         return render(request, "admin/catalog/budgetimportjob/new_import.html", context)
+
+    def download_template_view(self, request):
+        try:
+            template_path = get_template_path(IMPORT_TEMPLATE_NAME)
+        except FileNotFoundError:
+            messages.error(
+                request,
+                f"Modelo CSV ausente: assets/templates/{IMPORT_TEMPLATE_NAME}.",
+            )
+            return HttpResponseRedirect(reverse("admin:catalog_budgetimportjob_new_import"))
+
+        content = template_path.read_bytes()
+        if not content.startswith(b"\xef\xbb\xbf"):
+            content = b"\xef\xbb\xbf" + content
+        response = HttpResponse(content, content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="{IMPORT_TEMPLATE_NAME}"'
+        return response
 
     def apply_import_view(self, request, job_id: int):
         job = get_object_or_404(BudgetImportJob, pk=job_id)

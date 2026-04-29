@@ -2,6 +2,10 @@
 
 {% block content %}
   <h1>{{ title }}</h1>
+  <p>
+    <a class="button" href="{% url 'admin:catalog_budgetimportjob_download_template' %}">Baixar modelo CSV</a>
+  </p>
+  <p>Use o modelo oficial para manter o cabeçalho e o separador esperados pelo importador.</p>
   <form method="post" enctype="multipart/form-data">
     {% csrf_token %}
     <fieldset class="module aligned">

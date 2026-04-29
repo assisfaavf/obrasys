@@ -4,5 +4,8 @@
   <li>
     <a href="{% url 'admin:catalog_budgetimportjob_new_import' %}">Novo Import (Upload CSV)</a>
   </li>
+  <li>
+    <a href="{% url 'admin:catalog_budgetimportjob_download_template' %}">Baixar modelo CSV</a>
+  </li>
   {{ block.super }}
 {% endblock %}

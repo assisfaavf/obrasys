@@ -33,6 +33,7 @@ HEADER_SYNONYMS = {
 }
 
 PRICE_FIELDS = {"pu_material", "pu_labor"}
+IMPORT_TEMPLATE_NAME = "modelo_importacao_itens_contrato.csv"
 
 
 def normalize_header(value: str) -> str:
