@@ -272,6 +272,10 @@ def _source_application_date(parent_line: MeasurementLine):
     return timezone.localdate()
 
 
+def _source_location(parent_line: MeasurementLine):
+    return parent_line.location
+
+
 def _active_additional_materials_by_parent(parent_item_ids: list[int]) -> dict[int, list[BudgetItemAdditionalMaterial]]:
     if not parent_item_ids:
         return {}
@@ -336,17 +340,18 @@ def rebuild_generated_additional_lines(
     for source_line in source_lines:
         if not source_line.item_id:
             continue
+        source_location = _source_location(source_line)
         for relation in relation_map.get(source_line.item_id, []):
             generated_qty = _q_qty(
                 (source_line.additional_materials_base_qty or Decimal("0")) * relation.quantity_per_unit
             )
             if generated_qty <= 0:
                 continue
-            key = (relation.additional_item_id, source_line.location_id)
+            key = (relation.additional_item_id, source_location.id if source_location else None)
             grouped_contributions.setdefault(key, []).append(
                 {
                     "item": relation.additional_item,
-                    "location": source_line.location,
+                    "location": source_location,
                     "quantity_added": generated_qty,
                     "application_date": _source_application_date(source_line),
                     "note": _generated_note(source_line),
