@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+from django.core.management import call_command
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -13,8 +14,11 @@ from openpyxl import Workbook, load_workbook
 from PIL import Image as PilImage
 
 from catalog.models import BudgetItem, Discipline, Unit
+from billing.models import MeasurementLine, MeasurementLineHistory, MeasurementPeriod
+from billing.services.measurement_lines import add_or_merge_contracted_line
 from core.models import Client, Project, ProjectLocation
 from exports.models import ExportStatus, ExportType, MeasurementExport
+from rdo.management.commands.import_palatio_apr2026_rdo import IMPORT_TAG, MEASUREMENT_IMPORT_NOTE
 from rdo.forms import DailyWorkLogForm
 from rdo.models import (
     DailyWorkActivityEntry,
@@ -548,3 +552,136 @@ class RdoViewTests(TestCase):
         self.assertEqual(material.item, self.material_item)
         self.assertEqual(material.quantity, Decimal("3.500"))
         self.assertEqual(material.unit_snapshot, "m3")
+
+
+class ImportPalatioApr2026RdoCommandTests(TestCase):
+    def setUp(self):
+        self.client_obj = Client.objects.create(name="Cliente Palatium")
+        self.project = Project.objects.create(name="Condominio palatium", client=self.client_obj)
+        self.location_1tp = ProjectLocation.objects.create(
+            project=self.project,
+            code="1TP",
+            name="Primeiro tipo",
+            order_index=1,
+        )
+        self.location_tipo = ProjectLocation.objects.create(
+            project=self.project,
+            code="TIPO",
+            name="Pavimento tipo",
+            order_index=2,
+        )
+        Discipline.objects.create(name="Eletrica", code="1")
+        Discipline.objects.create(name="Combate a incendio", code="6")
+        self.unit = Unit.objects.create(code="un", name="Unidade")
+        for eap_code in (
+            "6.6.1",
+            "6.6.5",
+            "6.6.6",
+            "1.2.4",
+            "1.1.14",
+            "1.1.1",
+            "1.1.9",
+            "1.1.10",
+            "1.1.7",
+            "1.2.1",
+        ):
+            BudgetItem.objects.create(
+                project=self.project,
+                eap_code=eap_code,
+                description=f"Item {eap_code}",
+                unit=self.unit,
+                qty_contracted=Decimal("1000.000"),
+                pu_material=Decimal("10.0000"),
+                pu_labor=Decimal("5.0000"),
+            )
+        self.period = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=1,
+            ref_month=date(2026, 4, 1),
+            start_date=date(2026, 4, 1),
+            end_date=date(2026, 4, 30),
+        )
+
+    def test_command_recreates_april_daily_logs_and_measurement_materials(self):
+        call_command("import_palatio_apr2026_rdo")
+
+        self.assertEqual(self.project.daily_work_logs.count(), 10)
+
+        april_first = self.project.daily_work_logs.get(log_date=date(2026, 4, 1))
+        self.assertEqual(april_first.team_entries.filter(import_tag=IMPORT_TAG).count(), 2)
+        self.assertEqual(april_first.activity_entries.filter(import_tag=IMPORT_TAG).count(), 2)
+        self.assertEqual(april_first.material_entries.filter(import_tag=IMPORT_TAG).count(), 3)
+        self.assertTrue(
+            april_first.material_entries.filter(
+                import_tag=IMPORT_TAG,
+                item__eap_code="6.6.1",
+                quantity=Decimal("76.000"),
+                location__isnull=True,
+            ).exists()
+        )
+
+        gas_tipo_line = MeasurementLine.objects.get(
+            period=self.period,
+            item__eap_code="6.6.1",
+            location=self.location_tipo,
+            is_generated_additional=False,
+        )
+        self.assertEqual(gas_tipo_line.qty_period, Decimal("224.000"))
+        self.assertEqual(
+            list(gas_tipo_line.histories.values_list("application_date", flat=True)),
+            [date(2026, 4, 22), date(2026, 4, 18), date(2026, 4, 1)],
+        )
+        self.assertTrue(all(note == MEASUREMENT_IMPORT_NOTE for note in gas_tipo_line.histories.values_list("note", flat=True)))
+
+        electric_line = MeasurementLine.objects.get(
+            period=self.period,
+            item__eap_code="1.1.14",
+            location=self.location_1tp,
+            is_generated_additional=False,
+        )
+        self.assertEqual(electric_line.qty_period, Decimal("36.000"))
+        self.assertEqual(electric_line.histories.count(), 4)
+
+    def test_command_is_idempotent_and_preserves_manual_entries(self):
+        call_command("import_palatio_apr2026_rdo")
+
+        april_seventh = self.project.daily_work_logs.get(log_date=date(2026, 4, 7))
+        DailyWorkTeamEntry.objects.create(
+            daily_log=april_seventh,
+            team_name="Equipe Manual",
+            worker_count=3,
+            location=self.location_1tp,
+            activity_description="Lancamento manual",
+        )
+        item = self.project.budget_items.get(eap_code="6.6.1")
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=item,
+            location=self.location_1tp,
+            qty_period=Decimal("5.000"),
+            application_date=date(2026, 4, 30),
+            note="LANCAMENTO_MANUAL",
+        )
+
+        call_command("import_palatio_apr2026_rdo")
+
+        april_seventh.refresh_from_db()
+        self.assertEqual(april_seventh.team_entries.filter(import_tag=IMPORT_TAG).count(), 2)
+        self.assertTrue(april_seventh.team_entries.filter(team_name="Equipe Manual", import_tag="").exists())
+
+        line.refresh_from_db()
+        self.assertEqual(line.qty_period, Decimal("43.000"))
+        self.assertEqual(
+            line.histories.filter(note=MEASUREMENT_IMPORT_NOTE, application_date=date(2026, 4, 1)).count(),
+            1,
+        )
+        self.assertEqual(line.histories.filter(note="LANCAMENTO_MANUAL").count(), 1)
+        self.assertEqual(
+            MeasurementLineHistory.objects.filter(
+                line__period=self.period,
+                note=MEASUREMENT_IMPORT_NOTE,
+                line__item__eap_code="6.6.1",
+                line__location=self.location_1tp,
+            ).count(),
+            1,
+        )

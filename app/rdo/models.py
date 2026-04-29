@@ -86,6 +86,7 @@ class DailyWorkTeamEntry(models.Model):
     daily_log = models.ForeignKey(DailyWorkLog, on_delete=models.CASCADE, related_name="team_entries")
     team_name = models.CharField(max_length=120)
     worker_count = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    import_tag = models.CharField(max_length=64, blank=True, default="", db_index=True)
     location = models.ForeignKey(
         "core.ProjectLocation",
         on_delete=models.SET_NULL,
@@ -120,6 +121,7 @@ class DailyWorkTeamEntry(models.Model):
 class DailyWorkActivityEntry(models.Model):
     daily_log = models.ForeignKey(DailyWorkLog, on_delete=models.CASCADE, related_name="activity_entries")
     description = models.TextField()
+    import_tag = models.CharField(max_length=64, blank=True, default="", db_index=True)
     location = models.ForeignKey(
         "core.ProjectLocation",
         on_delete=models.SET_NULL,
@@ -147,6 +149,7 @@ class DailyWorkOccurrence(models.Model):
     daily_log = models.ForeignKey(DailyWorkLog, on_delete=models.CASCADE, related_name="occurrences")
     occurrence_type = models.CharField(max_length=20, choices=OccurrenceType.choices)
     description = models.TextField()
+    import_tag = models.CharField(max_length=64, blank=True, default="", db_index=True)
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -165,6 +168,7 @@ class DailyWorkMaterialEntry(models.Model):
         blank=True,
         related_name="daily_work_material_entries",
     )
+    import_tag = models.CharField(max_length=64, blank=True, default="", db_index=True)
     description_snapshot = models.CharField(max_length=255, blank=True)
     location = models.ForeignKey(
         "core.ProjectLocation",
