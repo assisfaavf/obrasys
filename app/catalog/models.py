@@ -4,6 +4,8 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 
+from catalog.utils import strip_manufacturer_hint
+
 
 class Unit(models.Model):
     code = models.CharField(max_length=20, unique=True)
@@ -51,6 +53,10 @@ class BudgetItem(models.Model):
             models.UniqueConstraint(fields=["project", "eap_code"], name="uniq_budget_item_project_eap"),
         ]
         ordering = ["project_id", "eap_code"]
+
+    def save(self, *args, **kwargs):
+        self.description = strip_manufacturer_hint(self.description)
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.eap_code} — {self.description} [{self.unit.code}]"

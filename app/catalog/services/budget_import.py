@@ -13,6 +13,7 @@ from catalog.models import (
     BudgetItem,
     Unit,
 )
+from catalog.utils import strip_manufacturer_hint
 
 CANONICAL_FIELDS = (
     "eap_code",
@@ -164,7 +165,7 @@ def build_preview_data(csv_content: bytes) -> dict:
             continue
 
         eap_code = (row.get(mapped_fields["eap_code"]) or "").strip()
-        description = (row.get(mapped_fields["description"]) or "").strip()
+        description = strip_manufacturer_hint((row.get(mapped_fields["description"]) or "").strip())
         unit_code = (row.get(mapped_fields["unit"]) or "").strip().upper()
 
         normalized_row["eap_code"] = eap_code
@@ -271,7 +272,7 @@ def apply_import_job(job: BudgetImportJob) -> dict:
                     continue
 
                 eap_code = (row.get("eap_code") or "").strip()
-                description = (row.get("description") or "").strip()
+                description = strip_manufacturer_hint((row.get("description") or "").strip())
                 unit_code = (row.get("unit") or "").strip().upper()
                 qty_contracted = Decimal(str(row.get("qty_contracted", "0")))
                 pu_material = Decimal(str(row.get("pu_material", "0")))
