@@ -702,6 +702,79 @@ class ContractedLineMergeTests(TestCase):
             ["6.6.4 - Tomada 10A", "6.6.1 - Cabo 2,5mm"],
         )
 
+    def test_two_parent_items_keep_generated_lines_separate_by_parent_location(self):
+        add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            application_date=date(2026, 4, 8),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+        add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item_b,
+            location=self.location_cob,
+            qty_period=Decimal("5.000"),
+            application_date=date(2026, 4, 9),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+
+        generated_lines = list(
+            MeasurementLine.objects.filter(
+                period=self.period,
+                is_generated_additional=True,
+                item=self.screw_item,
+            ).order_by("location__code")
+        )
+
+        self.assertEqual(len(generated_lines), 2)
+        self.assertEqual(
+            [(line.location.code, line.qty_period) for line in generated_lines],
+            [("COB", Decimal("5.000")), ("TER", Decimal("20.000"))],
+        )
+
+    def test_editing_parent_location_moves_generated_line_to_new_location(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("10.000"),
+            application_date=date(2026, 4, 8),
+            use_additional_materials=True,
+            created_by=self.user,
+        )
+
+        response = self.client.post(
+            reverse("billing:line_edit", args=[line.id]),
+            {
+                "item": str(self.item.id),
+                "location": str(self.location_cob.id),
+                "qty_period": "10.000",
+                "note": "mudanca de local",
+                "excess_justification": "",
+                "use_additional_materials": "on",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        generated_line = MeasurementLine.objects.get(
+            period=self.period,
+            is_generated_additional=True,
+            item=self.screw_item,
+        )
+        self.assertEqual(generated_line.location_id, self.location_cob.id)
+        self.assertFalse(
+            MeasurementLine.objects.filter(
+                period=self.period,
+                is_generated_additional=True,
+                item=self.screw_item,
+                location=self.location_ter,
+            ).exists()
+        )
+
     def test_editing_parent_line_recalculates_consolidated_additional_line(self):
         line_a, _ = add_or_merge_contracted_line(
             period=self.period,
