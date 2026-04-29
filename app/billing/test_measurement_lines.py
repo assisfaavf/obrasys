@@ -941,3 +941,24 @@ class ContractedLineMergeTests(TestCase):
 
         self.assertContains(response, reverse("billing:line_edit", args=[generated_line.id]))
         self.assertContains(response, reverse("billing:line_delete", args=[generated_line.id]))
+
+    def test_measurement_detail_renders_item_select_with_wrapping_class(self):
+        response = self.client.get(reverse("billing:measurement_detail", args=[self.period.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="measurement-item-select"')
+
+    def test_measurement_line_edit_renders_item_select_with_wrapping_class(self):
+        line, _ = add_or_merge_contracted_line(
+            period=self.period,
+            item=self.item,
+            location=self.location_ter,
+            qty_period=Decimal("2.000"),
+            application_date=date(2026, 4, 8),
+            created_by=self.user,
+        )
+
+        response = self.client.get(reverse("billing:line_edit", args=[line.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="measurement-item-select"')

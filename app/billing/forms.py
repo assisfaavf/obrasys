@@ -16,6 +16,14 @@ from catalog.models import BudgetItem, Unit
 from core.models import ProjectLocation
 
 
+def _apply_measurement_item_select_attrs(field) -> None:
+    existing_class = field.widget.attrs.get("class", "").strip()
+    classes = [name for name in existing_class.split() if name]
+    if "measurement-item-select" not in classes:
+        classes.append("measurement-item-select")
+    field.widget.attrs["class"] = " ".join(classes)
+
+
 class MeasurementPeriodForm(forms.ModelForm):
     ref_month = forms.DateField(
         input_formats=["%m/%Y", "%Y-%m", "%Y-%m-%d"],
@@ -68,6 +76,7 @@ class MeasurementLineForm(forms.ModelForm):
         self.fields["item"].queryset = BudgetItem.objects.filter(
             project=period.project, is_active=True
         ).order_by("eap_code")
+        _apply_measurement_item_select_attrs(self.fields["item"])
         self.fields["location"].queryset = ProjectLocation.objects.filter(
             project=period.project, is_active=True
         ).order_by("order_index", "code")
@@ -142,6 +151,7 @@ class ContractedLineAddForm(forms.ModelForm):
         self.fields["item"].queryset = BudgetItem.objects.filter(
             project=period.project, is_active=True
         ).order_by("eap_code")
+        _apply_measurement_item_select_attrs(self.fields["item"])
         self.fields["location"].queryset = ProjectLocation.objects.filter(
             project=period.project, is_active=True
         ).order_by("order_index", "code")

@@ -4,6 +4,22 @@
 {% block title %}{{ title }}{% endblock %}
 
 {% block content %}
+  <style>
+    .measurement-item-select {
+      display: block;
+      width: min(100%, 56rem);
+      max-width: 100%;
+      box-sizing: border-box;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .measurement-item-select option {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+  </style>
   <h1>{{ title }}</h1>
   <p class="muted">Medicao {{ period.number }} - {{ period.project.name }}</p>
   {% if form %}
