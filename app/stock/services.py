@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -9,7 +9,11 @@ QTY_Q = Decimal("0.001")
 
 
 def _q_qty(value: Decimal) -> Decimal:
-    return (value or Decimal("0")).quantize(QTY_Q)
+    try:
+        decimal_value = Decimal(str(value or "0").replace(",", "."))
+    except (InvalidOperation, ValueError):
+        raise ValidationError("Quantidade invalida.")
+    return decimal_value.quantize(QTY_Q)
 
 
 def _movement_delta(movement_type: str, quantity: Decimal) -> Decimal:
@@ -18,6 +22,18 @@ def _movement_delta(movement_type: str, quantity: Decimal) -> Decimal:
     if movement_type in {StockMovementType.OUT, StockMovementType.ADJUST_NEGATIVE}:
         return -quantity
     raise ValidationError("Tipo de movimentacao ainda nao implementado para saldo.")
+
+
+def calculate_balance_after(
+    *,
+    current_quantity: Decimal,
+    movement_type: str,
+    quantity: Decimal,
+) -> Decimal:
+    quantity = _q_qty(quantity)
+    if quantity <= 0:
+        raise ValidationError("Quantidade movimentada deve ser > 0.")
+    return _q_qty((current_quantity or Decimal("0")) + _movement_delta(movement_type, quantity))
 
 
 @transaction.atomic
@@ -38,7 +54,11 @@ def register_stock_movement(
         StockBalance.objects.select_for_update()
         .get_or_create(material=material, location=location, defaults={"quantity": Decimal("0")})
     )
-    new_quantity = _q_qty(balance.quantity + _movement_delta(movement_type, quantity))
+    new_quantity = calculate_balance_after(
+        current_quantity=balance.quantity,
+        movement_type=movement_type,
+        quantity=quantity,
+    )
     if new_quantity < 0:
         raise ValidationError("Movimentacao nao pode deixar saldo de estoque negativo.")
 

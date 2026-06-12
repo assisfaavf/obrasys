@@ -22,6 +22,7 @@ class StockMovementType(models.TextChoices):
 class Material(models.Model):
     code = models.CharField(max_length=40, unique=True)
     name = models.CharField(max_length=255)
+    brand = models.CharField(max_length=120, blank=True, default="")
     unit = models.ForeignKey("catalog.Unit", on_delete=models.PROTECT, related_name="stock_materials")
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
