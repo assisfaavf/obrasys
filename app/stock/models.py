@@ -17,6 +17,7 @@ class StockMovementType(models.TextChoices):
     ADJUST_POSITIVE = "ADJUST_POSITIVE", "Ajuste positivo"
     ADJUST_NEGATIVE = "ADJUST_NEGATIVE", "Ajuste negativo"
     TRANSFER = "TRANSFER", "Transferencia"
+    PURCHASE_IN = "PURCHASE_IN", "Entrada de compra"
     MEASUREMENT_OUT = "MEASUREMENT_OUT", "Saida de medicao"
     MEASUREMENT_OUT_REVERSAL = "MEASUREMENT_OUT_REVERSAL", "Estorno de saida de medicao"
 
@@ -30,6 +31,23 @@ class MeasurementMaterialStatus(models.TextChoices):
 class MeasurementStockConsumptionType(models.TextChoices):
     OUT = "OUT", "Saida"
     REVERSAL = "REVERSAL", "Estorno"
+
+
+class StockImportStatus(models.TextChoices):
+    DRAFT = "DRAFT", "Rascunho"
+    PENDING_REVIEW = "PENDING_REVIEW", "Pendente de conferencia"
+    CONFIRMED = "CONFIRMED", "Confirmado"
+    CANCELLED = "CANCELLED", "Cancelado"
+    ERROR = "ERROR", "Com erros"
+
+
+class StockImportItemStatus(models.TextChoices):
+    OK = "OK", "OK"
+    PENDING_MATERIAL = "PENDING_MATERIAL", "Pendente de material"
+    PENDING_UNIT = "PENDING_UNIT", "Pendente de unidade"
+    PENDING_QUANTITY = "PENDING_QUANTITY", "Pendente de quantidade"
+    IGNORED = "IGNORED", "Ignorado"
+    CONFIRMED = "CONFIRMED", "Confirmado"
 
 
 class Material(models.Model):
@@ -47,6 +65,35 @@ class Material(models.Model):
 
     def __str__(self) -> str:
         return f"{self.code} - {self.name}"
+
+
+class MaterialAlias(models.Model):
+    material = models.ForeignKey("stock.Material", on_delete=models.CASCADE, related_name="aliases")
+    alias = models.CharField(max_length=255)
+    supplier = models.CharField(max_length=255, blank=True)
+    normalized_alias = models.CharField(max_length=255, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["alias"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["normalized_alias", "supplier"],
+                name="uniq_material_alias_normalized_supplier",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        if self.supplier:
+            return f"{self.alias} ({self.supplier}) -> {self.material}"
+        return f"{self.alias} -> {self.material}"
+
+    def save(self, *args, **kwargs):
+        from stock.purchase_import import normalize_description
+
+        self.normalized_alias = normalize_description(self.alias)
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class StockLocation(models.Model):
@@ -171,6 +218,127 @@ class StockMovement(models.Model):
                 raise ValidationError("Transferencia exige local de destino.")
             if self.target_location_id == self.location_id:
                 raise ValidationError("Local de origem e destino devem ser diferentes.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class StockImport(models.Model):
+    original_file = models.FileField(upload_to="stock/imports/")
+    supplier = models.CharField(max_length=255, blank=True)
+    project = models.ForeignKey(
+        "core.Project",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stock_imports",
+    )
+    destination_location = models.ForeignKey(
+        "stock.StockLocation",
+        on_delete=models.PROTECT,
+        related_name="stock_imports",
+    )
+    received_at = models.DateField(null=True, blank=True)
+    status = models.CharField(
+        max_length=30,
+        choices=StockImportStatus.choices,
+        default=StockImportStatus.DRAFT,
+    )
+    note = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stock_imports",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Importacao de estoque #{self.pk or 'nova'}"
+
+    def clean(self):
+        super().clean()
+        if not self.destination_location_id:
+            raise ValidationError("Local de destino obrigatorio.")
+        if self.destination_location_id:
+            if self.destination_location.location_type == StockLocationType.CENTRAL and self.project_id:
+                raise ValidationError("Entrada em estoque central nao deve ter obra vinculada.")
+            if self.destination_location.location_type == StockLocationType.PROJECT:
+                if not self.destination_location.project_id:
+                    raise ValidationError("Estoque de obra exige uma obra vinculada.")
+                if self.project_id and self.destination_location.project_id != self.project_id:
+                    raise ValidationError("Local de destino deve pertencer a obra informada.")
+
+    def save(self, *args, **kwargs):
+        if self.destination_location_id and self.destination_location.location_type == StockLocationType.PROJECT:
+            self.project_id = self.destination_location.project_id
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class StockImportItem(models.Model):
+    import_batch = models.ForeignKey("stock.StockImport", on_delete=models.CASCADE, related_name="items")
+    row_number = models.PositiveIntegerField()
+    original_code = models.CharField(max_length=80, blank=True)
+    supplier_code = models.CharField(max_length=80, blank=True)
+    original_description = models.CharField(max_length=255, blank=True)
+    original_unit = models.CharField(max_length=40, blank=True)
+    raw_quantity = models.CharField(max_length=80, blank=True)
+    original_quantity = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
+    unit_price = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    total_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    material = models.ForeignKey(
+        "stock.Material",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="stock_import_items",
+    )
+    confirmed_quantity = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
+    status = models.CharField(
+        max_length=30,
+        choices=StockImportItemStatus.choices,
+        default=StockImportItemStatus.PENDING_MATERIAL,
+    )
+    note = models.TextField(blank=True)
+    manual_adjustment = models.BooleanField(default=False)
+    stock_movement = models.ForeignKey(
+        "stock.StockMovement",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="stock_import_items",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["import_batch_id", "row_number", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["import_batch", "row_number"], name="uniq_stock_import_item_row"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.import_batch_id} - linha {self.row_number}: {self.original_description}"
+
+    def clean(self):
+        super().clean()
+        if self.status in {StockImportItemStatus.OK, StockImportItemStatus.CONFIRMED}:
+            if not self.material_id:
+                raise ValidationError("Item confirmado exige material vinculado.")
+            if self.confirmed_quantity is None or self.confirmed_quantity <= 0:
+                raise ValidationError("Item confirmado exige quantidade maior que zero.")
+        if self.confirmed_quantity is not None and self.confirmed_quantity <= 0:
+            raise ValidationError("Quantidade confirmada deve ser maior que zero.")
+        if self.original_quantity is not None and self.original_quantity <= 0:
+            raise ValidationError("Quantidade original deve ser maior que zero.")
 
     def save(self, *args, **kwargs):
         self.full_clean()

@@ -20,6 +20,7 @@ def _movement_delta(movement_type: str, quantity: Decimal) -> Decimal:
     if movement_type in {
         StockMovementType.IN,
         StockMovementType.ADJUST_POSITIVE,
+        StockMovementType.PURCHASE_IN,
         StockMovementType.MEASUREMENT_OUT_REVERSAL,
     }:
         return quantity
