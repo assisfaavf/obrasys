@@ -48,7 +48,7 @@ INSTALLED_APPS = [
     'exports',
     'rdo',
     'api',
-    'stock',
+    'stock.apps.StockConfig',
 ]
 
 MIDDLEWARE = [

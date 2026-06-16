@@ -58,6 +58,25 @@
       });
   }
 
+  function updateTargetLocationVisibility() {
+    var movementType = getField("movement_type");
+    var targetLocation = getField("target_location");
+    if (!movementType || !targetLocation) {
+      return;
+    }
+
+    var row = targetLocation.closest(".field-target_location") || targetLocation.closest(".form-row");
+    var isTransfer = movementType.value === "TRANSFER";
+    if (row) {
+      row.classList.toggle("stock-transfer-visible", isTransfer);
+      row.style.display = isTransfer ? "" : "none";
+    }
+    targetLocation.required = isTransfer;
+    if (!isTransfer) {
+      targetLocation.value = "";
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     ["material", "location", "movement_type", "quantity"].forEach(function (name) {
       var field = getField(name);
@@ -66,6 +85,11 @@
         field.addEventListener("input", updateBalances);
       }
     });
+    var movementType = getField("movement_type");
+    if (movementType) {
+      movementType.addEventListener("change", updateTargetLocationVisibility);
+    }
+    updateTargetLocationVisibility();
     updateBalances();
   });
 })();

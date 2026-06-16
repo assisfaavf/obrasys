@@ -17,6 +17,19 @@ class StockMovementType(models.TextChoices):
     ADJUST_POSITIVE = "ADJUST_POSITIVE", "Ajuste positivo"
     ADJUST_NEGATIVE = "ADJUST_NEGATIVE", "Ajuste negativo"
     TRANSFER = "TRANSFER", "Transferencia"
+    MEASUREMENT_OUT = "MEASUREMENT_OUT", "Saida de medicao"
+    MEASUREMENT_OUT_REVERSAL = "MEASUREMENT_OUT_REVERSAL", "Estorno de saida de medicao"
+
+
+class MeasurementMaterialStatus(models.TextChoices):
+    PENDING = "PENDING", "Pendente"
+    APPLIED = "APPLIED", "Baixado"
+    REVERSED = "REVERSED", "Estornado"
+
+
+class MeasurementStockConsumptionType(models.TextChoices):
+    OUT = "OUT", "Saida"
+    REVERSAL = "REVERSAL", "Estorno"
 
 
 class Material(models.Model):
@@ -120,7 +133,7 @@ class StockMovement(models.Model):
         null=True,
         blank=True,
     )
-    movement_type = models.CharField(max_length=20, choices=StockMovementType.choices)
+    movement_type = models.CharField(max_length=30, choices=StockMovementType.choices)
     quantity = models.DecimalField(max_digits=14, decimal_places=3)
     balance_after = models.DecimalField(max_digits=14, decimal_places=3)
     note = models.TextField(blank=True)
@@ -162,3 +175,89 @@ class StockMovement(models.Model):
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+class MeasurementMaterial(models.Model):
+    measurement = models.ForeignKey(
+        "billing.MeasurementPeriod",
+        on_delete=models.CASCADE,
+        related_name="stock_materials",
+    )
+    material = models.ForeignKey("stock.Material", on_delete=models.PROTECT, related_name="measurement_materials")
+    unit = models.ForeignKey("catalog.Unit", on_delete=models.PROTECT, related_name="measurement_stock_materials")
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    note = models.TextField(blank=True)
+    stock_location = models.ForeignKey(
+        "stock.StockLocation",
+        on_delete=models.PROTECT,
+        related_name="measurement_materials",
+        null=True,
+        blank=True,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=MeasurementMaterialStatus.choices,
+        default=MeasurementMaterialStatus.PENDING,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["measurement_id", "id"]
+        indexes = [
+            models.Index(fields=["measurement", "status"], name="idx_meas_mat_measure_status"),
+            models.Index(fields=["material", "stock_location"], name="idx_meas_mat_material_loc"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.measurement} - {self.material} - {self.quantity}"
+
+    def clean(self):
+        super().clean()
+        if self.quantity is not None and self.quantity <= 0:
+            raise ValidationError("Quantidade aplicada deve ser > 0.")
+        if self.material_id and self.unit_id and self.material.unit_id != self.unit_id:
+            raise ValidationError("Unidade aplicada deve ser igual a unidade do material.")
+        if self.material_id and not self.stock_location_id:
+            raise ValidationError("Informe o local de retirada do material.")
+        if self.stock_location_id:
+            if self.stock_location.location_type != StockLocationType.PROJECT:
+                raise ValidationError("Materiais de medicao devem sair de um estoque de obra.")
+            if self.measurement_id and self.stock_location.project_id != self.measurement.project_id:
+                raise ValidationError("O local de retirada deve pertencer a obra da medicao.")
+
+    def save(self, *args, **kwargs):
+        if self.material_id:
+            self.unit_id = self.material.unit_id
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class MeasurementStockConsumption(models.Model):
+    measurement_material = models.ForeignKey(
+        "stock.MeasurementMaterial",
+        on_delete=models.CASCADE,
+        related_name="consumptions",
+    )
+    measurement = models.ForeignKey(
+        "billing.MeasurementPeriod",
+        on_delete=models.CASCADE,
+        related_name="stock_consumptions",
+    )
+    stock_movement = models.ForeignKey(
+        "stock.StockMovement",
+        on_delete=models.PROTECT,
+        related_name="measurement_consumptions",
+    )
+    consumption_type = models.CharField(max_length=20, choices=MeasurementStockConsumptionType.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["measurement", "consumption_type"], name="idx_meas_stock_cons_type"),
+            models.Index(fields=["stock_movement"], name="idx_meas_stock_cons_mov"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.measurement} - {self.consumption_type} - {self.stock_movement_id}"

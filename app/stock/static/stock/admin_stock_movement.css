@@ -1,0 +1,7 @@
+.form-row.field-target_location {
+  display: none !important;
+}
+
+.field-target_location.stock-transfer-visible {
+  display: block !important;
+}

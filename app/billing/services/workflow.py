@@ -99,6 +99,12 @@ def transition_measurement_status(period, to_status: str, user=None, note: str |
         update_fields.append(note_field)
 
     locked_period.save(update_fields=update_fields)
+
+    if to_status in {WorkflowStatus.DRAFT, WorkflowStatus.REJECTED, WorkflowStatus.CANCELLED}:
+        from stock.measurement_consumption import reverse_measurement_stock_consumption
+
+        reverse_measurement_stock_consumption(locked_period, user=user)
+
     MeasurementWorkflowHistory.objects.create(
         period=locked_period,
         from_status=from_status,
