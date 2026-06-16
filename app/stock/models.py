@@ -17,6 +17,7 @@ class StockMovementType(models.TextChoices):
     ADJUST_POSITIVE = "ADJUST_POSITIVE", "Ajuste positivo"
     ADJUST_NEGATIVE = "ADJUST_NEGATIVE", "Ajuste negativo"
     TRANSFER = "TRANSFER", "Transferencia"
+    INITIAL_IN = "ENTRADA_INICIAL", "Entrada inicial"
     MEASUREMENT_OUT = "MEASUREMENT_OUT", "Saida de medicao"
     MEASUREMENT_OUT_REVERSAL = "MEASUREMENT_OUT_REVERSAL", "Estorno de saida de medicao"
 
@@ -32,9 +33,30 @@ class MeasurementStockConsumptionType(models.TextChoices):
     REVERSAL = "REVERSAL", "Estorno"
 
 
+class InitialStockImportStatus(models.TextChoices):
+    DRAFT = "DRAFT", "Rascunho"
+    PENDING_REVIEW = "PENDING_REVIEW", "Pendente de conferencia"
+    CONFIRMED = "CONFIRMED", "Confirmado"
+    CANCELLED = "CANCELLED", "Cancelado"
+    ERROR = "ERROR", "Com erros"
+
+
+class InitialStockImportItemStatus(models.TextChoices):
+    PENDING = "PENDING", "Pendente"
+    NEW_MATERIAL = "NEW_MATERIAL", "Novo material"
+    EXISTING_MATERIAL = "EXISTING_MATERIAL", "Material existente"
+    UPDATE_MATERIAL = "UPDATE_MATERIAL", "Atualizar material"
+    ERROR = "ERROR", "Erro"
+    IGNORED = "IGNORED", "Ignorado"
+    CONFIRMED = "CONFIRMED", "Confirmado"
+
+
 class Material(models.Model):
     code = models.CharField(max_length=40, unique=True)
     name = models.CharField(max_length=255)
+    category = models.CharField(max_length=120, blank=True, default="")
+    subcategory = models.CharField(max_length=120, blank=True, default="")
+    item_type = models.CharField(max_length=120, blank=True, default="")
     brand = models.CharField(max_length=120, blank=True, default="")
     unit = models.ForeignKey("catalog.Unit", on_delete=models.PROTECT, related_name="stock_materials")
     description = models.TextField(blank=True)
@@ -171,6 +193,114 @@ class StockMovement(models.Model):
                 raise ValidationError("Transferencia exige local de destino.")
             if self.target_location_id == self.location_id:
                 raise ValidationError("Local de origem e destino devem ser diferentes.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class InitialStockImport(models.Model):
+    original_file = models.FileField(upload_to="stock/initial-imports/")
+    destination_location = models.ForeignKey(
+        "stock.StockLocation",
+        on_delete=models.PROTECT,
+        related_name="initial_stock_imports",
+        null=True,
+        blank=True,
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=InitialStockImportStatus.choices,
+        default=InitialStockImportStatus.DRAFT,
+    )
+    note = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="initial_stock_imports",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    total_rows = models.PositiveIntegerField(default=0)
+    total_materials_created = models.PositiveIntegerField(default=0)
+    total_materials_updated = models.PositiveIntegerField(default=0)
+    total_movements_created = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Carga inicial de estoque #{self.pk or 'nova'}"
+
+    def clean(self):
+        super().clean()
+        if self.destination_location_id and self.destination_location.location_type != StockLocationType.CENTRAL:
+            raise ValidationError("A carga inicial deve usar o estoque central nesta etapa.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class InitialStockImportItem(models.Model):
+    import_batch = models.ForeignKey(
+        "stock.InitialStockImport",
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    row_number = models.PositiveIntegerField()
+    original_code = models.CharField(max_length=80, blank=True)
+    original_category = models.CharField(max_length=120, blank=True)
+    original_subcategory = models.CharField(max_length=120, blank=True)
+    original_item_type = models.CharField(max_length=120, blank=True)
+    original_description = models.CharField(max_length=255, blank=True)
+    original_brand = models.CharField(max_length=120, blank=True)
+    original_unit = models.CharField(max_length=40, blank=True)
+    raw_quantity = models.CharField(max_length=80, blank=True)
+    original_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    confirmed_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    material = models.ForeignKey(
+        "stock.Material",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="initial_stock_import_items",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=InitialStockImportItemStatus.choices,
+        default=InitialStockImportItemStatus.PENDING,
+    )
+    planned_action = models.CharField(max_length=255, blank=True)
+    error_message = models.TextField(blank=True)
+    stock_movement = models.ForeignKey(
+        "stock.StockMovement",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="initial_stock_import_items",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["import_batch_id", "row_number", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["import_batch", "row_number"], name="uniq_initial_stock_import_row"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.import_batch_id} - linha {self.row_number}: {self.original_description}"
+
+    def clean(self):
+        super().clean()
+        if self.original_quantity is not None and self.original_quantity < 0:
+            raise ValidationError("Quantidade original nao pode ser negativa.")
+        if self.confirmed_quantity is not None and self.confirmed_quantity < 0:
+            raise ValidationError("Quantidade confirmada nao pode ser negativa.")
 
     def save(self, *args, **kwargs):
         self.full_clean()
