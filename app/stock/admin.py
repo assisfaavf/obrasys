@@ -1,10 +1,14 @@
 from django.contrib import admin
-from django.core.exceptions import PermissionDenied
+from django.contrib import messages
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import JsonResponse
 from django.urls import path
 
 from stock.forms import MeasurementMaterialAdminForm, StockMovementAdminForm
+from stock.initial_import import cancel_initial_stock_import, confirm_initial_stock_import, parse_initial_stock_file
 from stock.models import (
+    InitialStockImport,
+    InitialStockImportItem,
     Material,
     MeasurementMaterial,
     MeasurementStockConsumption,
@@ -17,9 +21,9 @@ from stock.services import calculate_balance_after, register_stock_movement
 
 @admin.register(Material)
 class MaterialAdmin(admin.ModelAdmin):
-    list_display = ("code", "name", "brand", "unit", "is_active", "updated_at")
-    list_filter = ("is_active", "unit")
-    search_fields = ("code", "name", "brand", "description")
+    list_display = ("code", "name", "category", "subcategory", "item_type", "brand", "unit", "is_active", "updated_at")
+    list_filter = ("is_active", "unit", "category", "subcategory", "item_type")
+    search_fields = ("code", "name", "brand", "category", "subcategory", "item_type", "description")
     ordering = ("code",)
 
 
@@ -38,6 +42,118 @@ class StockBalanceAdmin(admin.ModelAdmin):
     search_fields = ("material__code", "material__name", "location__code", "location__name")
     ordering = ("location", "material")
     readonly_fields = ("updated_at",)
+
+
+class InitialStockImportItemInline(admin.TabularInline):
+    model = InitialStockImportItem
+    extra = 0
+    fields = (
+        "row_number",
+        "original_code",
+        "original_category",
+        "original_subcategory",
+        "original_item_type",
+        "original_description",
+        "original_brand",
+        "original_unit",
+        "raw_quantity",
+        "confirmed_quantity",
+        "material",
+        "status",
+        "planned_action",
+        "error_message",
+        "stock_movement",
+    )
+    readonly_fields = (
+        "row_number",
+        "original_code",
+        "original_category",
+        "original_subcategory",
+        "original_item_type",
+        "original_description",
+        "original_brand",
+        "original_unit",
+        "raw_quantity",
+        "planned_action",
+        "error_message",
+        "stock_movement",
+    )
+
+
+@admin.register(InitialStockImport)
+class InitialStockImportAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "destination_location",
+        "status",
+        "total_rows",
+        "total_materials_created",
+        "total_materials_updated",
+        "total_movements_created",
+        "created_at",
+    )
+    list_filter = ("status", "destination_location")
+    search_fields = ("note", "destination_location__name")
+    ordering = ("-created_at", "-id")
+    readonly_fields = (
+        "status",
+        "created_by",
+        "created_at",
+        "updated_at",
+        "confirmed_at",
+        "total_rows",
+        "total_materials_created",
+        "total_materials_updated",
+        "total_movements_created",
+    )
+    inlines = [InitialStockImportItemInline]
+    actions = ("parse_selected_imports", "confirm_selected_imports", "cancel_selected_imports")
+
+    def save_model(self, request, obj, form, change):
+        if not change and request.user.is_authenticated:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+        if not change:
+            try:
+                created = parse_initial_stock_file(obj)
+                self.message_user(request, f"Arquivo lido: {len(created)} itens para conferencia.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, "; ".join(exc.messages), messages.ERROR)
+
+    @admin.action(description="Processar/reprocessar arquivo de carga inicial")
+    def parse_selected_imports(self, request, queryset):
+        for import_batch in queryset:
+            try:
+                created = parse_initial_stock_file(import_batch)
+                self.message_user(request, f"Carga {import_batch.id}: {len(created)} itens lidos.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, f"Carga {import_batch.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+    @admin.action(description="Confirmar carga inicial de estoque")
+    def confirm_selected_imports(self, request, queryset):
+        for import_batch in queryset:
+            try:
+                result = confirm_initial_stock_import(import_batch, user=request.user)
+                self.message_user(
+                    request,
+                    (
+                        f"Carga {import_batch.id}: {result['materials_created']} materiais criados, "
+                        f"{result['materials_updated']} atualizados, "
+                        f"{result['movements_created']} entradas iniciais."
+                    ),
+                    messages.SUCCESS,
+                )
+            except ValidationError as exc:
+                self.message_user(request, f"Carga {import_batch.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+    @admin.action(description="Cancelar carga inicial antes da confirmacao")
+    def cancel_selected_imports(self, request, queryset):
+        for import_batch in queryset:
+            try:
+                cancel_initial_stock_import(import_batch)
+                self.message_user(request, f"Carga {import_batch.id}: cancelada.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, f"Carga {import_batch.id}: {'; '.join(exc.messages)}", messages.ERROR)
 
 
 @admin.register(StockMovement)

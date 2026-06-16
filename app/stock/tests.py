@@ -1,11 +1,14 @@
 from datetime import date
+from io import BytesIO
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.contrib.staticfiles import finders
 from django.test import TestCase
 from django.urls import reverse
+from openpyxl import Workbook
 
 from billing.models import MeasurementLine, MeasurementPeriod, WorkflowStatus
 from billing.services.measurement_calc import finalize_period
@@ -15,6 +18,9 @@ from catalog.models import Unit
 from core.models import Client, Project
 from stock.measurement_consumption import apply_measurement_stock_consumption
 from stock.models import (
+    InitialStockImport,
+    InitialStockImportItemStatus,
+    InitialStockImportStatus,
     Material,
     MeasurementMaterial,
     MeasurementMaterialStatus,
@@ -26,6 +32,7 @@ from stock.models import (
     StockMovement,
     StockMovementType,
 )
+from stock.initial_import import confirm_initial_stock_import, parse_initial_stock_file
 from stock.services import register_stock_movement
 
 
@@ -526,3 +533,234 @@ class StockCoreTests(TestCase):
             qty_period=Decimal("1"),
         )
         return period
+
+
+class InitialStockImportTests(TestCase):
+    def setUp(self):
+        self.client_obj = Client.objects.create(name="Cliente Carga Inicial")
+        self.project = Project.objects.create(name="Obra Carga Inicial", client=self.client_obj)
+        self.central_location = StockLocation.objects.create(
+            code="CENTRAL-INI",
+            name="Estoque Central da Empresa",
+            location_type=StockLocationType.CENTRAL,
+        )
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(username="initial-stock", password="secret123")
+
+    def test_import_valid_xlsx_file(self):
+        import_batch = self._create_import(
+            self._xlsx_file(
+                "estoque.xlsx",
+                [
+                    ["CODIGO_ITEM", "DESCRICAO", "UNIDADE", "ESTOQUE_EMPRESA"],
+                    ["01.01.0004", "Tubo 100mm", "VARA", 3],
+                ],
+            )
+        )
+
+        item = import_batch.items.get()
+        self.assertEqual(item.original_code, "01.01.0004")
+        self.assertEqual(item.original_quantity, Decimal("3.000"))
+        self.assertEqual(item.status, InitialStockImportItemStatus.NEW_MATERIAL)
+
+    def test_import_valid_csv_file(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 40mm,VARA,0\n")
+        )
+
+        item = import_batch.items.get()
+        self.assertEqual(item.original_description, "Tubo 40mm")
+        self.assertEqual(item.confirmed_quantity, Decimal("0"))
+
+    def test_confirm_creates_material_with_positive_stock(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,3\n")
+        )
+
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        material = Material.objects.get(code="01")
+        self.assertEqual(material.name, "Tubo 100mm")
+        self.assertEqual(material.unit.code, "VARA")
+
+    def test_confirm_creates_material_with_zero_stock(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n02,Joelho 100mm,UN,0\n")
+        )
+
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        self.assertTrue(Material.objects.filter(code="02", name="Joelho 100mm").exists())
+
+    def test_zero_stock_does_not_create_movement(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n02,Joelho 100mm,UN,0\n")
+        )
+
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        self.assertFalse(StockMovement.objects.exists())
+
+    def test_positive_stock_creates_initial_in_movement(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,3\n")
+        )
+
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        movement = StockMovement.objects.get()
+        self.assertEqual(movement.movement_type, StockMovementType.INITIAL_IN)
+        self.assertEqual(movement.quantity, Decimal("3.000"))
+
+    def test_central_stock_balance_is_updated(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,3\n")
+        )
+
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        material = Material.objects.get(code="01")
+        balance = StockBalance.objects.get(material=material, location=self.central_location)
+        self.assertEqual(balance.quantity, Decimal("3.000"))
+
+    def test_unconfirmed_import_does_not_change_stock_balance(self):
+        self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,3\n")
+        )
+
+        self.assertFalse(Material.objects.exists())
+        self.assertFalse(StockMovement.objects.exists())
+        self.assertFalse(StockBalance.objects.exists())
+
+    def test_confirmed_import_cannot_be_confirmed_again(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,3\n")
+        )
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        with self.assertRaisesMessage(ValidationError, "Importacao ja confirmada"):
+            confirm_initial_stock_import(import_batch, user=self.user)
+
+        self.assertEqual(StockMovement.objects.count(), 1)
+
+    def test_existing_material_is_not_duplicated(self):
+        unit = Unit.objects.create(code="VARA", name="VARA")
+        Material.objects.create(code="01", name="Tubo existente", unit=unit)
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,3\n")
+        )
+
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        self.assertEqual(Material.objects.filter(code="01").count(), 1)
+
+    def test_existing_material_is_reused_by_code(self):
+        unit = Unit.objects.create(code="VARA", name="VARA")
+        material = Material.objects.create(code="01", name="Tubo existente", unit=unit)
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,3\n")
+        )
+        item = import_batch.items.get()
+
+        self.assertEqual(item.material, material)
+
+    def test_negative_quantity_marks_item_as_error(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,-2\n")
+        )
+        item = import_batch.items.get()
+
+        self.assertEqual(item.status, InitialStockImportItemStatus.ERROR)
+        with self.assertRaisesMessage(ValidationError, "Quantidade negativa"):
+            confirm_initial_stock_import(import_batch, user=self.user)
+
+    def test_empty_quantity_creates_material_without_entry(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,\n")
+        )
+
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        self.assertTrue(Material.objects.filter(code="01").exists())
+        self.assertFalse(StockMovement.objects.exists())
+
+    def test_stock_movement_uses_material_unit(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,3\n")
+        )
+
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        movement = StockMovement.objects.get()
+        self.assertEqual(movement.material.unit.code, "VARA")
+
+    def test_ignored_item_does_not_create_material_or_movement(self):
+        import_batch = self._create_import(
+            self._csv_file("estoque.csv", "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,3\n")
+        )
+        item = import_batch.items.get()
+        item.status = InitialStockImportItemStatus.IGNORED
+        item.save(update_fields=["status", "updated_at"])
+
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        self.assertFalse(Material.objects.exists())
+        self.assertFalse(StockMovement.objects.exists())
+
+    def test_duplicate_header_and_observation_lines_do_not_break_import(self):
+        import_batch = self._create_import(
+            self._csv_file(
+                "estoque.csv",
+                (
+                    "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n"
+                    "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n"
+                    ",Observacao,,\n"
+                    "01,Tubo 100mm,VARA,3\n"
+                ),
+            )
+        )
+
+        self.assertEqual(import_batch.items.count(), 1)
+        self.assertEqual(import_batch.items.get().original_code, "01")
+
+    def test_status_and_counters_are_updated_on_confirmation(self):
+        import_batch = self._create_import(
+            self._csv_file(
+                "estoque.csv",
+                "CODIGO_ITEM,DESCRICAO,UNIDADE,ESTOQUE_EMPRESA\n01,Tubo 100mm,VARA,3\n02,Joelho,UN,0\n",
+            )
+        )
+
+        confirm_initial_stock_import(import_batch, user=self.user)
+
+        import_batch.refresh_from_db()
+        self.assertEqual(import_batch.status, InitialStockImportStatus.CONFIRMED)
+        self.assertEqual(import_batch.total_rows, 2)
+        self.assertEqual(import_batch.total_materials_created, 2)
+        self.assertEqual(import_batch.total_movements_created, 1)
+
+    def _create_import(self, uploaded_file):
+        import_batch = InitialStockImport.objects.create(
+            original_file=uploaded_file,
+            destination_location=self.central_location,
+            created_by=self.user,
+        )
+        parse_initial_stock_file(import_batch)
+        return import_batch
+
+    def _csv_file(self, name, content):
+        return SimpleUploadedFile(name, content.encode("utf-8"), content_type="text/csv")
+
+    def _xlsx_file(self, name, rows):
+        workbook = Workbook()
+        sheet = workbook.active
+        for row in rows:
+            sheet.append(row)
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        return SimpleUploadedFile(
+            name,
+            output.read(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )

@@ -94,7 +94,7 @@ def validate_measurement_stock_availability(measurement) -> list[str]:
 def apply_measurement_stock_consumption(measurement, user=None) -> list[MeasurementStockConsumption]:
     materials = list(
         _pending_materials(measurement)
-        .select_for_update()
+        .select_for_update(of=("self",))
         .select_related("material", "unit", "measurement__project")
         .order_by("id")
     )
@@ -132,7 +132,7 @@ def apply_measurement_stock_consumption(measurement, user=None) -> list[Measurem
 @transaction.atomic
 def reverse_measurement_stock_consumption(measurement, user=None) -> list[MeasurementStockConsumption]:
     materials = list(
-        MeasurementMaterial.objects.select_for_update()
+        MeasurementMaterial.objects.select_for_update(of=("self",))
         .select_related("material", "stock_location", "measurement__project")
         .filter(measurement=measurement, status=MeasurementMaterialStatus.APPLIED)
         .order_by("id")
