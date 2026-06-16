@@ -17,9 +17,18 @@ def _q_qty(value: Decimal) -> Decimal:
 
 
 def _movement_delta(movement_type: str, quantity: Decimal) -> Decimal:
-    if movement_type in {StockMovementType.IN, StockMovementType.ADJUST_POSITIVE}:
+    if movement_type in {
+        StockMovementType.IN,
+        StockMovementType.ADJUST_POSITIVE,
+        StockMovementType.MEASUREMENT_OUT_REVERSAL,
+    }:
         return quantity
-    if movement_type in {StockMovementType.OUT, StockMovementType.ADJUST_NEGATIVE}:
+    if movement_type in {
+        StockMovementType.OUT,
+        StockMovementType.ADJUST_NEGATIVE,
+        StockMovementType.TRANSFER,
+        StockMovementType.MEASUREMENT_OUT,
+    }:
         return -quantity
     raise ValidationError("Tipo de movimentacao ainda nao implementado para saldo.")
 
@@ -43,12 +52,18 @@ def register_stock_movement(
     location: StockLocation,
     movement_type: str,
     quantity: Decimal,
+    target_location: StockLocation | None = None,
     note: str = "",
     created_by=None,
 ) -> StockMovement:
     quantity = _q_qty(quantity)
     if quantity <= 0:
         raise ValidationError("Quantidade movimentada deve ser > 0.")
+    if movement_type == StockMovementType.TRANSFER:
+        if target_location is None:
+            raise ValidationError("Transferencia exige local de destino.")
+        if target_location.id == location.id:
+            raise ValidationError("Local de origem e destino devem ser diferentes.")
 
     balance, _ = (
         StockBalance.objects.select_for_update()
@@ -65,9 +80,18 @@ def register_stock_movement(
     balance.quantity = new_quantity
     balance.save(update_fields=["quantity", "updated_at"])
 
+    if movement_type == StockMovementType.TRANSFER:
+        target_balance, _ = (
+            StockBalance.objects.select_for_update()
+            .get_or_create(material=material, location=target_location, defaults={"quantity": Decimal("0")})
+        )
+        target_balance.quantity = _q_qty(target_balance.quantity + quantity)
+        target_balance.save(update_fields=["quantity", "updated_at"])
+
     return StockMovement.objects.create(
         material=material,
         location=location,
+        target_location=target_location,
         movement_type=movement_type,
         quantity=quantity,
         balance_after=new_quantity,

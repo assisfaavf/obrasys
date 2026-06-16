@@ -7,6 +7,8 @@ from billing.models import (
     MeasurementSettlement,
     MeasurementWorkflowHistory,
 )
+from stock.forms import MeasurementMaterialAdminForm
+from stock.models import MeasurementMaterial
 
 
 class MeasurementWorkflowHistoryInline(admin.TabularInline):
@@ -17,6 +19,17 @@ class MeasurementWorkflowHistoryInline(admin.TabularInline):
 
     def has_add_permission(self, request, obj=None):
         return False
+
+
+class MeasurementMaterialInline(admin.TabularInline):
+    model = MeasurementMaterial
+    form = MeasurementMaterialAdminForm
+    extra = 1
+    fields = ("material", "stock_location", "available_quantity", "quantity", "note", "unit", "status")
+    readonly_fields = ("unit", "status")
+
+    class Media:
+        js = ("stock/admin_measurement_material.js",)
 
 
 @admin.register(MeasurementPeriod)
@@ -36,7 +49,7 @@ class MeasurementPeriodAdmin(admin.ModelAdmin):
     list_filter = ("project", "workflow_status", "financial_status")
     search_fields = ("project__name", "=number")
     ordering = ("project", "number")
-    inlines = [MeasurementWorkflowHistoryInline]
+    inlines = [MeasurementMaterialInline, MeasurementWorkflowHistoryInline]
 
 
 @admin.register(MeasurementLine)

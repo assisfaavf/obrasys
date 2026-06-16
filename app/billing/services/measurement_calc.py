@@ -276,6 +276,9 @@ def finalize_period(period_id: int, user=None):
 
         refresh_period_excess(period.id)
         errors = validate_finalize(period.id)
+        from stock.measurement_consumption import validate_measurement_stock_availability
+
+        errors.extend(validate_measurement_stock_availability(period))
         if errors:
             raise ValidationError(errors)
 
@@ -312,6 +315,10 @@ def finalize_period(period_id: int, user=None):
                 "finalized_at",
             ]
         )
+
+        from stock.measurement_consumption import apply_measurement_stock_consumption
+
+        apply_measurement_stock_consumption(period, user=user)
 
         update_financial_status(period.id)
         period.refresh_from_db()

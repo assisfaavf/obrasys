@@ -3,8 +3,15 @@ from django.core.exceptions import PermissionDenied
 from django.http import JsonResponse
 from django.urls import path
 
-from stock.forms import StockMovementAdminForm
-from stock.models import Material, StockBalance, StockLocation, StockMovement
+from stock.forms import MeasurementMaterialAdminForm, StockMovementAdminForm
+from stock.models import (
+    Material,
+    MeasurementMaterial,
+    MeasurementStockConsumption,
+    StockBalance,
+    StockLocation,
+    StockMovement,
+)
 from stock.services import calculate_balance_after, register_stock_movement
 
 
@@ -36,11 +43,24 @@ class StockBalanceAdmin(admin.ModelAdmin):
 @admin.register(StockMovement)
 class StockMovementAdmin(admin.ModelAdmin):
     form = StockMovementAdminForm
-    list_display = ("material", "location", "movement_type", "quantity", "balance_after", "occurred_at", "created_by")
+    list_display = (
+        "material",
+        "location",
+        "target_location",
+        "movement_type",
+        "quantity",
+        "balance_after",
+        "occurred_at",
+        "created_by",
+    )
     list_filter = ("movement_type", "location__location_type", "location__project")
     search_fields = ("material__code", "material__name", "location__code", "note", "created_by__username")
     ordering = ("-occurred_at", "-id")
     readonly_fields = ("balance_after", "occurred_at", "created_by")
+
+    class Media:
+        css = {"all": ("stock/admin_stock_movement.css",)}
+        js = ("stock/admin_stock_movement.js",)
 
     def get_urls(self):
         custom_urls = [
@@ -54,8 +74,27 @@ class StockMovementAdmin(admin.ModelAdmin):
 
     def get_fields(self, request, obj=None):
         if obj:
-            return ("material", "location", "movement_type", "quantity", "balance_after", "note", "occurred_at", "created_by")
-        return ("material", "location", "movement_type", "quantity", "available_quantity", "balance_after_display", "note")
+            return (
+                "material",
+                "location",
+                "target_location",
+                "movement_type",
+                "quantity",
+                "balance_after",
+                "note",
+                "occurred_at",
+                "created_by",
+            )
+        return (
+            "material",
+            "location",
+            "target_location",
+            "movement_type",
+            "quantity",
+            "available_quantity",
+            "balance_after_display",
+            "note",
+        )
 
     def has_change_permission(self, request, obj=None):
         if obj and request.method == "POST":
@@ -69,6 +108,7 @@ class StockMovementAdmin(admin.ModelAdmin):
         movement = register_stock_movement(
             material=form.cleaned_data["material"],
             location=form.cleaned_data["location"],
+            target_location=form.cleaned_data.get("target_location"),
             movement_type=form.cleaned_data["movement_type"],
             quantity=form.cleaned_data["quantity"],
             note=form.cleaned_data.get("note", ""),
@@ -109,3 +149,42 @@ class StockMovementAdmin(admin.ModelAdmin):
                 "balance_after": str(balance_after),
             }
         )
+
+
+@admin.register(MeasurementMaterial)
+class MeasurementMaterialAdmin(admin.ModelAdmin):
+    form = MeasurementMaterialAdminForm
+    list_display = ("measurement", "material", "quantity", "unit", "stock_location", "status", "updated_at")
+    list_filter = ("status", "measurement__project", "stock_location")
+    search_fields = ("measurement__project__name", "material__code", "material__name", "note")
+    ordering = ("measurement", "id")
+    fields = (
+        "measurement",
+        "material",
+        "stock_location",
+        "available_quantity",
+        "quantity",
+        "note",
+        "unit",
+        "status",
+        "created_at",
+        "updated_at",
+    )
+    readonly_fields = ("unit", "status", "created_at", "updated_at")
+
+    class Media:
+        js = ("stock/admin_measurement_material.js",)
+
+
+@admin.register(MeasurementStockConsumption)
+class MeasurementStockConsumptionAdmin(admin.ModelAdmin):
+    list_display = ("measurement", "measurement_material", "stock_movement", "consumption_type", "created_at")
+    list_filter = ("consumption_type", "measurement__project")
+    search_fields = (
+        "measurement__project__name",
+        "measurement_material__material__code",
+        "measurement_material__material__name",
+        "stock_movement__note",
+    )
+    ordering = ("-created_at", "-id")
+    readonly_fields = ("measurement", "measurement_material", "stock_movement", "consumption_type", "created_at")
