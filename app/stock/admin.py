@@ -10,12 +10,16 @@ from stock.models import (
     InitialStockImport,
     InitialStockImportItem,
     Material,
+    MaterialAlias,
     MeasurementMaterial,
     MeasurementStockConsumption,
     StockBalance,
+    StockImport,
+    StockImportItem,
     StockLocation,
     StockMovement,
 )
+from stock.purchase_import import cancel_stock_import, confirm_stock_import, parse_stock_import_file
 from stock.services import calculate_balance_after, register_stock_movement
 
 
@@ -25,6 +29,15 @@ class MaterialAdmin(admin.ModelAdmin):
     list_filter = ("is_active", "unit", "category", "subcategory", "item_type")
     search_fields = ("code", "name", "brand", "category", "subcategory", "item_type", "description")
     ordering = ("code",)
+
+
+@admin.register(MaterialAlias)
+class MaterialAliasAdmin(admin.ModelAdmin):
+    list_display = ("alias", "supplier", "material", "created_at")
+    list_filter = ("supplier",)
+    search_fields = ("alias", "supplier", "material__code", "material__name")
+    ordering = ("alias",)
+    readonly_fields = ("normalized_alias", "created_at")
 
 
 @admin.register(StockLocation)
@@ -76,6 +89,36 @@ class InitialStockImportItemInline(admin.TabularInline):
         "raw_quantity",
         "planned_action",
         "error_message",
+        "stock_movement",
+    )
+
+
+class StockImportItemInline(admin.TabularInline):
+    model = StockImportItem
+    extra = 0
+    fields = (
+        "row_number",
+        "original_code",
+        "supplier_code",
+        "original_description",
+        "original_unit",
+        "raw_quantity",
+        "original_quantity",
+        "material",
+        "confirmed_quantity",
+        "status",
+        "manual_adjustment",
+        "note",
+        "stock_movement",
+    )
+    readonly_fields = (
+        "row_number",
+        "original_code",
+        "supplier_code",
+        "original_description",
+        "original_unit",
+        "raw_quantity",
+        "original_quantity",
         "stock_movement",
     )
 
@@ -154,6 +197,63 @@ class InitialStockImportAdmin(admin.ModelAdmin):
                 self.message_user(request, f"Carga {import_batch.id}: cancelada.", messages.SUCCESS)
             except ValidationError as exc:
                 self.message_user(request, f"Carga {import_batch.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+
+@admin.register(StockImport)
+class StockImportAdmin(admin.ModelAdmin):
+    list_display = ("id", "supplier", "destination_location", "project", "status", "received_at", "created_at")
+    list_filter = ("status", "destination_location__location_type", "project")
+    search_fields = ("supplier", "note", "destination_location__name", "project__name")
+    ordering = ("-created_at", "-id")
+    readonly_fields = ("status", "created_by", "created_at", "updated_at", "confirmed_at")
+    inlines = [StockImportItemInline]
+    actions = ("parse_selected_imports", "confirm_selected_imports", "cancel_selected_imports")
+
+    def save_model(self, request, obj, form, change):
+        if not change and request.user.is_authenticated:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+        if not change:
+            try:
+                parse_stock_import_file(obj)
+                self.message_user(request, "Arquivo lido e itens criados para conferencia.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, "; ".join(exc.messages), messages.ERROR)
+
+    @admin.action(description="Ler/reler arquivo e gerar itens para conferencia")
+    def parse_selected_imports(self, request, queryset):
+        for import_batch in queryset:
+            try:
+                created = parse_stock_import_file(import_batch)
+                self.message_user(
+                    request,
+                    f"Importacao {import_batch.id}: {len(created)} itens lidos.",
+                    messages.SUCCESS,
+                )
+            except ValidationError as exc:
+                self.message_user(request, f"Importacao {import_batch.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+    @admin.action(description="Confirmar entrada de estoque")
+    def confirm_selected_imports(self, request, queryset):
+        for import_batch in queryset:
+            try:
+                confirmed = confirm_stock_import(import_batch, user=request.user)
+                self.message_user(
+                    request,
+                    f"Importacao {import_batch.id}: {len(confirmed)} entradas geradas.",
+                    messages.SUCCESS,
+                )
+            except ValidationError as exc:
+                self.message_user(request, f"Importacao {import_batch.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+    @admin.action(description="Cancelar importacao antes da confirmacao")
+    def cancel_selected_imports(self, request, queryset):
+        for import_batch in queryset:
+            try:
+                cancel_stock_import(import_batch)
+                self.message_user(request, f"Importacao {import_batch.id}: cancelada.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, f"Importacao {import_batch.id}: {'; '.join(exc.messages)}", messages.ERROR)
 
 
 @admin.register(StockMovement)

@@ -31,3 +31,14 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - Atualizacao do saldo do estoque central exclusivamente via movimentacao.
 - Bloqueio de confirmacao duplicada do mesmo lote.
 - Suporte a linhas ignoradas para cabecalhos duplicados, observacoes ou totais.
+
+## Importacao de Pedidos para Estoque
+
+- Importacao de pedidos de compra por CSV e XLSX pelo Django Admin.
+- Conferencia dos itens antes da confirmacao da entrada em estoque.
+- Associacao automatica de itens importados a materiais por descricao normalizada.
+- Cadastro de aliases para reconhecer descricoes de fornecedores.
+- Marcacao de itens pendentes quando material, unidade ou quantidade precisam de revisao.
+- Confirmacao da importacao gerando movimentacoes `PURCHASE_IN`.
+- Entrada em estoque central ou estoque de obra, conforme local selecionado.
+- Bloqueio de confirmacao duplicada do mesmo pedido importado.
