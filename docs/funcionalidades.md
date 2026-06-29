@@ -53,3 +53,15 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - Recalculo permitido enquanto a requisicao esta em rascunho ou em analise.
 - Aprovacao e cancelamento da requisicao sem movimentar estoque nesta etapa.
 - Contadores por requisicao para itens com saldo na obra, transferencia sugerida e compra sugerida.
+
+## Processamento de Requisicao de Materiais
+
+- Processamento de requisicoes aprovadas pelo Django Admin.
+- Geracao de transferencia sugerida do estoque central para o almoxarifado da obra.
+- Validacao do saldo central atual antes de transferir.
+- Atualizacao de saldos via movimentacao `TRANSFER`.
+- Geracao de pedido/lista de compra para quantidades sugeridas de compra.
+- Vinculo entre item da requisicao e movimentacao de transferencia.
+- Vinculo entre item da requisicao e item do pedido de compra.
+- Bloqueio de processamento duplicado da mesma requisicao.
+- Pedido de compra nao altera estoque; entrada real continua no fluxo de importacao/recebimento.

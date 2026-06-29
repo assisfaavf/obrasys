@@ -84,7 +84,25 @@ class MaterialRequestItemStatus(models.TextChoices):
     TRANSFER_SUGGESTED = "TRANSFER_SUGGESTED", "Transferencia sugerida"
     PURCHASE_SUGGESTED = "PURCHASE_SUGGESTED", "Compra sugerida"
     MIXED = "MIXED", "Misto"
+    TRANSFER_GENERATED = "TRANSFER_GENERATED", "Transferencia gerada"
+    PURCHASE_GENERATED = "PURCHASE_GENERATED", "Compra gerada"
+    TRANSFER_PURCHASE_GENERATED = "TRANSFER_PURCHASE_GENERATED", "Transferencia e compra geradas"
     FULFILLED = "FULFILLED", "Atendido"
+    CANCELLED = "CANCELLED", "Cancelado"
+
+
+class PurchaseRequestStatus(models.TextChoices):
+    DRAFT = "DRAFT", "Rascunho"
+    GENERATED = "GENERATED", "Gerado"
+    QUOTING = "QUOTING", "Em cotacao"
+    PURCHASED = "PURCHASED", "Comprado"
+    CANCELLED = "CANCELLED", "Cancelado"
+
+
+class PurchaseRequestItemStatus(models.TextChoices):
+    PENDING = "PENDING", "Pendente"
+    QUOTED = "QUOTED", "Cotado"
+    PURCHASED = "PURCHASED", "Comprado"
     CANCELLED = "CANCELLED", "Cancelado"
 
 
@@ -550,6 +568,13 @@ class MaterialRequestItem(models.Model):
         choices=MaterialRequestItemStatus.choices,
         default=MaterialRequestItemStatus.PENDING,
     )
+    transfer_movement = models.ForeignKey(
+        "stock.StockMovement",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="material_request_transfer_items",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -579,6 +604,96 @@ class MaterialRequestItem(models.Model):
             validate_material_request_item(self)
 
     def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class PurchaseRequest(models.Model):
+    project = models.ForeignKey("core.Project", on_delete=models.PROTECT, related_name="purchase_requests")
+    material_request = models.OneToOneField(
+        "stock.MaterialRequest",
+        on_delete=models.PROTECT,
+        related_name="purchase_request",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=PurchaseRequestStatus.choices,
+        default=PurchaseRequestStatus.GENERATED,
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="purchase_requests",
+    )
+    note = models.TextField(blank=True)
+    total_items = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Pedido de compra #{self.pk or 'novo'} - {self.project}"
+
+    def clean(self):
+        super().clean()
+        if not self.project_id:
+            raise ValidationError("Obra obrigatoria.")
+        if not self.material_request_id:
+            raise ValidationError("Requisicao de materiais obrigatoria.")
+        if self.project_id and self.material_request_id and self.project_id != self.material_request.project_id:
+            raise ValidationError("Pedido de compra deve pertencer a mesma obra da requisicao.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class PurchaseRequestItem(models.Model):
+    purchase_request = models.ForeignKey("stock.PurchaseRequest", on_delete=models.CASCADE, related_name="items")
+    material_request_item = models.OneToOneField(
+        "stock.MaterialRequestItem",
+        on_delete=models.PROTECT,
+        related_name="purchase_request_item",
+    )
+    material = models.ForeignKey("stock.Material", on_delete=models.PROTECT, related_name="purchase_request_items")
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    unit = models.ForeignKey("catalog.Unit", on_delete=models.PROTECT, related_name="purchase_request_items")
+    note = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=PurchaseRequestItemStatus.choices,
+        default=PurchaseRequestItemStatus.PENDING,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["purchase_request_id", "id"]
+        constraints = [
+            models.CheckConstraint(check=Q(quantity__gt=0), name="purchase_request_item_qty_positive"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.purchase_request_id} - {self.material} - {self.quantity}"
+
+    def clean(self):
+        super().clean()
+        if not self.material_id:
+            raise ValidationError("Material obrigatorio.")
+        if self.quantity is None or self.quantity <= 0:
+            raise ValidationError("Quantidade deve ser maior que zero.")
+        if self.material_id and self.unit_id and self.material.unit_id != self.unit_id:
+            raise ValidationError("Unidade do pedido deve ser igual a unidade do material.")
+        if self.material_request_item_id and self.material_id and self.material_request_item.material_id != self.material_id:
+            raise ValidationError("Item do pedido deve usar o mesmo material da requisicao.")
+
+    def save(self, *args, **kwargs):
+        if self.material_id:
+            self.unit_id = self.material.unit_id
         self.full_clean()
         super().save(*args, **kwargs)
 

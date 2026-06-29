@@ -15,6 +15,8 @@ from stock.models import (
     MaterialRequestItem,
     MeasurementMaterial,
     MeasurementStockConsumption,
+    PurchaseRequest,
+    PurchaseRequestItem,
     StockBalance,
     StockImport,
     StockImportItem,
@@ -22,6 +24,7 @@ from stock.models import (
     StockMovement,
 )
 from stock.material_request import approve_material_request, calculate_material_request, cancel_material_request
+from stock.material_request_processing import process_material_request
 from stock.purchase_import import cancel_stock_import, confirm_stock_import, parse_stock_import_file
 from stock.services import calculate_balance_after, register_stock_movement
 
@@ -139,6 +142,8 @@ class MaterialRequestItemInline(admin.TabularInline):
         "suggested_transfer_quantity",
         "suggested_purchase_quantity",
         "approved_quantity",
+        "transfer_movement",
+        "purchase_request_item_display",
         "status",
         "note",
     )
@@ -150,6 +155,8 @@ class MaterialRequestItemInline(admin.TabularInline):
         "suggested_transfer_quantity",
         "suggested_purchase_quantity",
         "approved_quantity",
+        "transfer_movement",
+        "purchase_request_item_display",
         "status",
     )
     autocomplete_fields = ("material",)
@@ -159,6 +166,22 @@ class MaterialRequestItemInline(admin.TabularInline):
         if obj and obj.material_id:
             return obj.material.unit.code
         return "-"
+
+    @admin.display(description="Item de compra")
+    def purchase_request_item_display(self, obj):
+        if not obj or not obj.pk:
+            return "-"
+        try:
+            return obj.purchase_request_item
+        except PurchaseRequestItem.DoesNotExist:
+            return "-"
+
+
+class PurchaseRequestItemInline(admin.TabularInline):
+    model = PurchaseRequestItem
+    extra = 0
+    fields = ("material", "quantity", "unit", "material_request_item", "status", "note")
+    readonly_fields = ("material", "quantity", "unit", "material_request_item", "status", "note")
 
 
 @admin.register(InitialStockImport)
@@ -266,7 +289,12 @@ class MaterialRequestAdmin(admin.ModelAdmin):
         "total_items_with_purchase_suggestion",
     )
     inlines = [MaterialRequestItemInline]
-    actions = ("calculate_selected_requests", "approve_selected_requests", "cancel_selected_requests")
+    actions = (
+        "calculate_selected_requests",
+        "approve_selected_requests",
+        "process_selected_requests",
+        "cancel_selected_requests",
+    )
 
     def save_model(self, request, obj, form, change):
         if not change and request.user.is_authenticated:
@@ -291,6 +319,26 @@ class MaterialRequestAdmin(admin.ModelAdmin):
             except ValidationError as exc:
                 self.message_user(request, f"Requisicao {material_request.id}: {'; '.join(exc.messages)}", messages.ERROR)
 
+    @admin.action(description="Gerar transferencia e pedido de compra")
+    def process_selected_requests(self, request, queryset):
+        for material_request in queryset:
+            try:
+                result = process_material_request(
+                    material_request,
+                    user=request.user if request.user.is_authenticated else None,
+                )
+                self.message_user(
+                    request,
+                    (
+                        f"Requisicao {material_request.id}: "
+                        f"{result.transfers_created} transferencia(s), "
+                        f"{result.purchase_items_created} item(ns) de compra gerado(s)."
+                    ),
+                    messages.SUCCESS,
+                )
+            except ValidationError as exc:
+                self.message_user(request, f"Requisicao {material_request.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
     @admin.action(description="Cancelar requisicao")
     def cancel_selected_requests(self, request, queryset):
         for material_request in queryset:
@@ -299,6 +347,16 @@ class MaterialRequestAdmin(admin.ModelAdmin):
                 self.message_user(request, f"Requisicao {material_request.id}: cancelada.", messages.SUCCESS)
             except ValidationError as exc:
                 self.message_user(request, f"Requisicao {material_request.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+
+@admin.register(PurchaseRequest)
+class PurchaseRequestAdmin(admin.ModelAdmin):
+    list_display = ("id", "project", "material_request", "status", "total_items", "created_by", "created_at")
+    list_filter = ("status", "project")
+    search_fields = ("project__name", "material_request__id", "created_by__username", "note")
+    ordering = ("-created_at", "-id")
+    readonly_fields = ("project", "material_request", "status", "created_by", "total_items", "created_at", "updated_at")
+    inlines = [PurchaseRequestItemInline]
 
 
 @admin.register(StockImport)
