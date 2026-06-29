@@ -42,3 +42,14 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - Confirmacao da importacao gerando movimentacoes `PURCHASE_IN`.
 - Entrada em estoque central ou estoque de obra, conforme local selecionado.
 - Bloqueio de confirmacao duplicada do mesmo pedido importado.
+
+## Requisicao de Materiais com Sugestao de Atendimento
+
+- Criacao de requisicoes de materiais por obra pelo Django Admin.
+- Inclusao de materiais solicitados com quantidade na unidade padrao do material.
+- Calculo automatico do que pode ser usado do almoxarifado da obra.
+- Calculo automatico do que pode ser transferido do estoque central.
+- Calculo automatico do que precisa ser comprado.
+- Recalculo permitido enquanto a requisicao esta em rascunho ou em analise.
+- Aprovacao e cancelamento da requisicao sem movimentar estoque nesta etapa.
+- Contadores por requisicao para itens com saldo na obra, transferencia sugerida e compra sugerida.

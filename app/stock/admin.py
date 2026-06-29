@@ -11,6 +11,8 @@ from stock.models import (
     InitialStockImportItem,
     Material,
     MaterialAlias,
+    MaterialRequest,
+    MaterialRequestItem,
     MeasurementMaterial,
     MeasurementStockConsumption,
     StockBalance,
@@ -19,6 +21,7 @@ from stock.models import (
     StockLocation,
     StockMovement,
 )
+from stock.material_request import approve_material_request, calculate_material_request, cancel_material_request
 from stock.purchase_import import cancel_stock_import, confirm_stock_import, parse_stock_import_file
 from stock.services import calculate_balance_after, register_stock_movement
 
@@ -123,6 +126,41 @@ class StockImportItemInline(admin.TabularInline):
     )
 
 
+class MaterialRequestItemInline(admin.TabularInline):
+    model = MaterialRequestItem
+    extra = 1
+    fields = (
+        "material",
+        "unit_display",
+        "requested_quantity",
+        "project_available_quantity",
+        "suggested_project_usage_quantity",
+        "central_available_quantity",
+        "suggested_transfer_quantity",
+        "suggested_purchase_quantity",
+        "approved_quantity",
+        "status",
+        "note",
+    )
+    readonly_fields = (
+        "unit_display",
+        "project_available_quantity",
+        "suggested_project_usage_quantity",
+        "central_available_quantity",
+        "suggested_transfer_quantity",
+        "suggested_purchase_quantity",
+        "approved_quantity",
+        "status",
+    )
+    autocomplete_fields = ("material",)
+
+    @admin.display(description="Unidade")
+    def unit_display(self, obj):
+        if obj and obj.material_id:
+            return obj.material.unit.code
+        return "-"
+
+
 @admin.register(InitialStockImport)
 class InitialStockImportAdmin(admin.ModelAdmin):
     list_display = (
@@ -197,6 +235,70 @@ class InitialStockImportAdmin(admin.ModelAdmin):
                 self.message_user(request, f"Carga {import_batch.id}: cancelada.", messages.SUCCESS)
             except ValidationError as exc:
                 self.message_user(request, f"Carga {import_batch.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+
+@admin.register(MaterialRequest)
+class MaterialRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "project",
+        "requested_by",
+        "status",
+        "total_items",
+        "total_items_with_project_stock",
+        "total_items_with_transfer_suggestion",
+        "total_items_with_purchase_suggestion",
+        "created_at",
+    )
+    list_filter = ("status", "project")
+    search_fields = ("project__name", "requested_by__username", "note")
+    ordering = ("-created_at", "-id")
+    readonly_fields = (
+        "status",
+        "requested_by",
+        "created_at",
+        "updated_at",
+        "analyzed_at",
+        "approved_at",
+        "total_items",
+        "total_items_with_project_stock",
+        "total_items_with_transfer_suggestion",
+        "total_items_with_purchase_suggestion",
+    )
+    inlines = [MaterialRequestItemInline]
+    actions = ("calculate_selected_requests", "approve_selected_requests", "cancel_selected_requests")
+
+    def save_model(self, request, obj, form, change):
+        if not change and request.user.is_authenticated:
+            obj.requested_by = request.user
+        super().save_model(request, obj, form, change)
+
+    @admin.action(description="Calcular sugestoes de atendimento")
+    def calculate_selected_requests(self, request, queryset):
+        for material_request in queryset:
+            try:
+                calculate_material_request(material_request)
+                self.message_user(request, f"Requisicao {material_request.id}: sugestoes recalculadas.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, f"Requisicao {material_request.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+    @admin.action(description="Aprovar requisicao sem movimentar estoque")
+    def approve_selected_requests(self, request, queryset):
+        for material_request in queryset:
+            try:
+                approve_material_request(material_request)
+                self.message_user(request, f"Requisicao {material_request.id}: aprovada.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, f"Requisicao {material_request.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+    @admin.action(description="Cancelar requisicao")
+    def cancel_selected_requests(self, request, queryset):
+        for material_request in queryset:
+            try:
+                cancel_material_request(material_request)
+                self.message_user(request, f"Requisicao {material_request.id}: cancelada.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, f"Requisicao {material_request.id}: {'; '.join(exc.messages)}", messages.ERROR)
 
 
 @admin.register(StockImport)

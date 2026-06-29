@@ -23,6 +23,10 @@ from stock.models import (
     InitialStockImportStatus,
     Material,
     MaterialAlias,
+    MaterialRequest,
+    MaterialRequestItem,
+    MaterialRequestItemStatus,
+    MaterialRequestStatus,
     MeasurementMaterial,
     MeasurementMaterialStatus,
     MeasurementStockConsumption,
@@ -37,6 +41,13 @@ from stock.models import (
     StockMovementType,
 )
 from stock.initial_import import confirm_initial_stock_import, parse_initial_stock_file
+from stock.material_request import (
+    add_material_request_item,
+    approve_material_request,
+    calculate_material_request,
+    cancel_material_request,
+    create_material_request,
+)
 from stock.purchase_import import confirm_stock_import, match_import_items, parse_stock_import_file
 from stock.services import register_stock_movement
 
@@ -965,4 +976,297 @@ class StockImportTests(TestCase):
             name,
             output.read(),
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+class MaterialRequestTests(TestCase):
+    def setUp(self):
+        self.unit = Unit.objects.create(code="UN", name="Unidade")
+        self.meter_unit = Unit.objects.create(code="M", name="Metro")
+        self.client_obj = Client.objects.create(name="Cliente Requisicao")
+        self.project = Project.objects.create(name="Obra Requisicao", client=self.client_obj)
+        self.other_project = Project.objects.create(name="Outra Obra", client=self.client_obj)
+        user_model = get_user_model()
+        self.user = user_model.objects.create_superuser(
+            username="request-user",
+            password="secret123",
+            email="request-user@example.com",
+        )
+        self.central_location = StockLocation.objects.create(
+            code="CENTRAL-REQ",
+            name="Estoque central requisicao",
+            location_type=StockLocationType.CENTRAL,
+        )
+        self.project_location = StockLocation.objects.create(
+            code="OBRA-REQ",
+            name="Almoxarifado requisicao",
+            location_type=StockLocationType.PROJECT,
+            project=self.project,
+        )
+        self.material = Material.objects.create(code="REQ-001", name="Tubo PVC 100mm", unit=self.unit)
+        self.flex_material = Material.objects.create(code="REQ-002", name="Cabo flexivel", unit=self.meter_unit)
+
+    def test_create_material_request_for_project(self):
+        material_request = create_material_request(project=self.project, requested_by=self.user, note="urgente")
+
+        self.assertEqual(material_request.project, self.project)
+        self.assertEqual(material_request.requested_by, self.user)
+        self.assertEqual(material_request.status, MaterialRequestStatus.DRAFT)
+        self.assertEqual(material_request.note, "urgente")
+
+    def test_add_valid_material_request_item(self):
+        material_request = self._create_request()
+
+        item = add_material_request_item(
+            request=material_request,
+            material=self.material,
+            requested_quantity=Decimal("2"),
+        )
+
+        self.assertEqual(item.requested_quantity, Decimal("2.000"))
+        self.assertEqual(item.material, self.material)
+
+    def test_blocks_zero_quantity(self):
+        material_request = self._create_request()
+
+        with self.assertRaisesMessage(ValidationError, "maior que zero"):
+            add_material_request_item(request=material_request, material=self.material, requested_quantity=Decimal("0"))
+
+    def test_blocks_negative_quantity(self):
+        material_request = self._create_request()
+
+        with self.assertRaisesMessage(ValidationError, "maior que zero"):
+            add_material_request_item(request=material_request, material=self.material, requested_quantity=Decimal("-1"))
+
+    def test_blocks_item_without_material(self):
+        material_request = self._create_request()
+        item = MaterialRequestItem(request=material_request, requested_quantity=Decimal("1"))
+
+        with self.assertRaisesMessage(ValidationError, "Material obrigatorio"):
+            item.full_clean()
+
+    def test_calculates_when_project_stock_is_sufficient(self):
+        item = self._request_item(requested=Decimal("10"), project_stock=Decimal("20"), central_stock=Decimal("5"))
+
+        self.assertEqual(item.suggested_project_usage_quantity, Decimal("10.000"))
+        self.assertEqual(item.suggested_transfer_quantity, Decimal("0.000"))
+        self.assertEqual(item.suggested_purchase_quantity, Decimal("0.000"))
+        self.assertEqual(item.status, MaterialRequestItemStatus.AVAILABLE_ON_PROJECT)
+
+    def test_calculates_when_project_stock_is_partial(self):
+        item = self._request_item(requested=Decimal("10"), project_stock=Decimal("4"), central_stock=Decimal("0"))
+
+        self.assertEqual(item.suggested_project_usage_quantity, Decimal("4.000"))
+        self.assertEqual(item.suggested_purchase_quantity, Decimal("6.000"))
+        self.assertEqual(item.status, MaterialRequestItemStatus.MIXED)
+
+    def test_calculates_when_central_stock_is_sufficient(self):
+        item = self._request_item(requested=Decimal("10"), project_stock=Decimal("0"), central_stock=Decimal("12"))
+
+        self.assertEqual(item.suggested_project_usage_quantity, Decimal("0.000"))
+        self.assertEqual(item.suggested_transfer_quantity, Decimal("10.000"))
+        self.assertEqual(item.suggested_purchase_quantity, Decimal("0.000"))
+        self.assertEqual(item.status, MaterialRequestItemStatus.TRANSFER_SUGGESTED)
+
+    def test_calculates_when_central_stock_is_partial(self):
+        item = self._request_item(requested=Decimal("10"), project_stock=Decimal("0"), central_stock=Decimal("3"))
+
+        self.assertEqual(item.suggested_transfer_quantity, Decimal("3.000"))
+        self.assertEqual(item.suggested_purchase_quantity, Decimal("7.000"))
+        self.assertEqual(item.status, MaterialRequestItemStatus.MIXED)
+
+    def test_calculates_when_everything_must_be_purchased(self):
+        item = self._request_item(requested=Decimal("10"), project_stock=Decimal("0"), central_stock=Decimal("0"))
+
+        self.assertEqual(item.suggested_purchase_quantity, Decimal("10.000"))
+        self.assertEqual(item.status, MaterialRequestItemStatus.PURCHASE_SUGGESTED)
+
+    def test_calculates_mixed_project_central_and_purchase(self):
+        item = self._request_item(requested=Decimal("20"), project_stock=Decimal("4"), central_stock=Decimal("10"))
+
+        self.assertEqual(item.suggested_project_usage_quantity, Decimal("4.000"))
+        self.assertEqual(item.suggested_transfer_quantity, Decimal("10.000"))
+        self.assertEqual(item.suggested_purchase_quantity, Decimal("6.000"))
+        self.assertEqual(item.status, MaterialRequestItemStatus.MIXED)
+
+    def test_calculation_persists_suggestion_fields_on_item(self):
+        item = self._request_item(requested=Decimal("10"), project_stock=Decimal("2"), central_stock=Decimal("5"))
+
+        saved_item = MaterialRequestItem.objects.get(pk=item.pk)
+        self.assertEqual(saved_item.project_available_quantity, Decimal("2.000"))
+        self.assertEqual(saved_item.suggested_project_usage_quantity, Decimal("2.000"))
+        self.assertEqual(saved_item.central_available_quantity, Decimal("5.000"))
+        self.assertEqual(saved_item.suggested_transfer_quantity, Decimal("5.000"))
+        self.assertEqual(saved_item.suggested_purchase_quantity, Decimal("3.000"))
+        self.assertEqual(saved_item.status, MaterialRequestItemStatus.MIXED)
+
+    def test_calculation_does_not_change_stock_balance(self):
+        self._request_item(requested=Decimal("10"), project_stock=Decimal("4"), central_stock=Decimal("10"))
+
+        self.assertEqual(
+            StockBalance.objects.get(material=self.material, location=self.project_location).quantity,
+            Decimal("4.000"),
+        )
+        self.assertEqual(
+            StockBalance.objects.get(material=self.material, location=self.central_location).quantity,
+            Decimal("10.000"),
+        )
+
+    def test_calculation_does_not_create_stock_movement(self):
+        self._request_item(requested=Decimal("10"), project_stock=Decimal("4"), central_stock=Decimal("10"))
+
+        self.assertFalse(StockMovement.objects.exists())
+
+    def test_recalculate_after_balance_changes(self):
+        material_request = self._create_request()
+        item = add_material_request_item(
+            request=material_request,
+            material=self.material,
+            requested_quantity=Decimal("10"),
+        )
+        self._set_balance(self.material, self.central_location, Decimal("10"))
+        calculate_material_request(material_request)
+        item.refresh_from_db()
+        self.assertEqual(item.suggested_transfer_quantity, Decimal("10.000"))
+
+        self._set_balance(self.material, self.central_location, Decimal("5"))
+        calculate_material_request(material_request)
+        item.refresh_from_db()
+
+        self.assertEqual(item.suggested_transfer_quantity, Decimal("5.000"))
+        self.assertEqual(item.suggested_purchase_quantity, Decimal("5.000"))
+
+    def test_transfer_suggestion_never_exceeds_central_stock(self):
+        item = self._request_item(requested=Decimal("20"), project_stock=Decimal("0"), central_stock=Decimal("7"))
+
+        self.assertLessEqual(item.suggested_transfer_quantity, item.central_available_quantity)
+        self.assertEqual(item.suggested_transfer_quantity, Decimal("7.000"))
+
+    def test_project_usage_never_exceeds_project_stock(self):
+        item = self._request_item(requested=Decimal("20"), project_stock=Decimal("8"), central_stock=Decimal("0"))
+
+        self.assertLessEqual(item.suggested_project_usage_quantity, item.project_available_quantity)
+        self.assertEqual(item.suggested_project_usage_quantity, Decimal("8.000"))
+
+    def test_approve_request_without_changing_stock(self):
+        material_request = self._create_request()
+        add_material_request_item(request=material_request, material=self.material, requested_quantity=Decimal("10"))
+        self._set_balance(self.material, self.project_location, Decimal("2"))
+        self._set_balance(self.material, self.central_location, Decimal("5"))
+
+        approve_material_request(material_request)
+
+        material_request.refresh_from_db()
+        self.assertEqual(material_request.status, MaterialRequestStatus.APPROVED)
+        self.assertEqual(
+            StockBalance.objects.get(material=self.material, location=self.project_location).quantity,
+            Decimal("2.000"),
+        )
+        self.assertFalse(StockMovement.objects.exists())
+
+    def test_cancel_request_without_changing_stock(self):
+        material_request = self._create_request()
+        add_material_request_item(request=material_request, material=self.material, requested_quantity=Decimal("10"))
+        self._set_balance(self.material, self.project_location, Decimal("2"))
+
+        cancel_material_request(material_request)
+
+        material_request.refresh_from_db()
+        self.assertEqual(material_request.status, MaterialRequestStatus.CANCELLED)
+        self.assertEqual(
+            StockBalance.objects.get(material=self.material, location=self.project_location).quantity,
+            Decimal("2.000"),
+        )
+        self.assertFalse(StockMovement.objects.exists())
+
+    def test_unit_display_comes_from_material(self):
+        material_request = self._create_request()
+        item = add_material_request_item(
+            request=material_request,
+            material=self.flex_material,
+            requested_quantity=Decimal("1.5"),
+        )
+
+        self.assertEqual(item.unit, self.meter_unit)
+
+    def test_request_counters_are_updated(self):
+        material_request = self._create_request()
+        available = Material.objects.create(code="REQ-AV", name="Joelho", unit=self.unit)
+        transfer = Material.objects.create(code="REQ-TR", name="Registro", unit=self.unit)
+        purchase = Material.objects.create(code="REQ-CP", name="Valvula", unit=self.unit)
+        add_material_request_item(request=material_request, material=available, requested_quantity=Decimal("5"))
+        add_material_request_item(request=material_request, material=transfer, requested_quantity=Decimal("5"))
+        add_material_request_item(request=material_request, material=purchase, requested_quantity=Decimal("5"))
+        self._set_balance(available, self.project_location, Decimal("5"))
+        self._set_balance(transfer, self.central_location, Decimal("5"))
+
+        calculate_material_request(material_request)
+        material_request.refresh_from_db()
+
+        self.assertEqual(material_request.total_items, 3)
+        self.assertEqual(material_request.total_items_with_project_stock, 1)
+        self.assertEqual(material_request.total_items_with_transfer_suggestion, 1)
+        self.assertEqual(material_request.total_items_with_purchase_suggestion, 1)
+
+    def test_admin_action_calculates_suggestions(self):
+        self.client.force_login(self.user)
+        material_request = self._create_request()
+        add_material_request_item(request=material_request, material=self.material, requested_quantity=Decimal("10"))
+        self._set_balance(self.material, self.project_location, Decimal("2"))
+        self._set_balance(self.material, self.central_location, Decimal("5"))
+
+        response = self.client.post(
+            reverse("admin:stock_materialrequest_changelist"),
+            {
+                "action": "calculate_selected_requests",
+                "_selected_action": [str(material_request.pk)],
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        item = material_request.items.get()
+        self.assertEqual(item.suggested_project_usage_quantity, Decimal("2.000"))
+        self.assertEqual(item.suggested_transfer_quantity, Decimal("5.000"))
+        self.assertEqual(item.suggested_purchase_quantity, Decimal("3.000"))
+
+    def test_cancelled_request_cannot_be_recalculated(self):
+        material_request = self._create_request()
+        add_material_request_item(request=material_request, material=self.material, requested_quantity=Decimal("10"))
+        cancel_material_request(material_request)
+
+        with self.assertRaisesMessage(ValidationError, "rascunho ou em analise"):
+            calculate_material_request(material_request)
+
+    def test_indivisible_unit_blocks_fractional_quantity(self):
+        material_request = self._create_request()
+
+        with self.assertRaisesMessage(ValidationError, "unidade indivisivel"):
+            add_material_request_item(
+                request=material_request,
+                material=self.material,
+                requested_quantity=Decimal("1.5"),
+            )
+
+    def _create_request(self):
+        return create_material_request(project=self.project, requested_by=self.user)
+
+    def _request_item(self, *, requested, project_stock, central_stock):
+        material_request = self._create_request()
+        item = add_material_request_item(
+            request=material_request,
+            material=self.material,
+            requested_quantity=requested,
+        )
+        self._set_balance(self.material, self.project_location, project_stock)
+        self._set_balance(self.material, self.central_location, central_stock)
+        calculate_material_request(material_request)
+        item.refresh_from_db()
+        return item
+
+    def _set_balance(self, material, location, quantity):
+        StockBalance.objects.update_or_create(
+            material=material,
+            location=location,
+            defaults={"quantity": Decimal(quantity).quantize(Decimal("0.001"))},
         )
