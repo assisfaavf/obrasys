@@ -69,6 +69,25 @@ class StockImportItemStatus(models.TextChoices):
     CONFIRMED = "CONFIRMED", "Confirmado"
 
 
+class MaterialRequestStatus(models.TextChoices):
+    DRAFT = "DRAFT", "Rascunho"
+    IN_REVIEW = "IN_REVIEW", "Em analise"
+    APPROVED = "APPROVED", "Aprovada"
+    PARTIALLY_FULFILLED = "PARTIALLY_FULFILLED", "Parcialmente atendida"
+    FULFILLED = "FULFILLED", "Atendida"
+    CANCELLED = "CANCELLED", "Cancelada"
+
+
+class MaterialRequestItemStatus(models.TextChoices):
+    PENDING = "PENDING", "Pendente"
+    AVAILABLE_ON_PROJECT = "AVAILABLE_ON_PROJECT", "Disponivel na obra"
+    TRANSFER_SUGGESTED = "TRANSFER_SUGGESTED", "Transferencia sugerida"
+    PURCHASE_SUGGESTED = "PURCHASE_SUGGESTED", "Compra sugerida"
+    MIXED = "MIXED", "Misto"
+    FULFILLED = "FULFILLED", "Atendido"
+    CANCELLED = "CANCELLED", "Cancelado"
+
+
 class Material(models.Model):
     code = models.CharField(max_length=40, unique=True)
     name = models.CharField(max_length=255)
@@ -469,6 +488,95 @@ class StockImportItem(models.Model):
             raise ValidationError("Quantidade confirmada deve ser maior que zero.")
         if self.original_quantity is not None and self.original_quantity <= 0:
             raise ValidationError("Quantidade original deve ser maior que zero.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class MaterialRequest(models.Model):
+    project = models.ForeignKey("core.Project", on_delete=models.PROTECT, related_name="material_requests")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="material_requests",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=MaterialRequestStatus.choices,
+        default=MaterialRequestStatus.DRAFT,
+    )
+    note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    analyzed_at = models.DateTimeField(null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    total_items = models.PositiveIntegerField(default=0)
+    total_items_with_project_stock = models.PositiveIntegerField(default=0)
+    total_items_with_transfer_suggestion = models.PositiveIntegerField(default=0)
+    total_items_with_purchase_suggestion = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Requisicao de materiais #{self.pk or 'nova'} - {self.project}"
+
+    def clean(self):
+        super().clean()
+        if not self.project_id:
+            raise ValidationError("Obra obrigatoria.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class MaterialRequestItem(models.Model):
+    request = models.ForeignKey("stock.MaterialRequest", on_delete=models.CASCADE, related_name="items")
+    material = models.ForeignKey("stock.Material", on_delete=models.PROTECT, related_name="request_items")
+    requested_quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    project_available_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    suggested_project_usage_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    central_available_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    suggested_transfer_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    suggested_purchase_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    approved_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    note = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=30,
+        choices=MaterialRequestItemStatus.choices,
+        default=MaterialRequestItemStatus.PENDING,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["request_id", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["request", "material"], name="uniq_material_request_item_material"),
+            models.CheckConstraint(check=Q(requested_quantity__gt=0), name="material_request_item_qty_positive"),
+        ]
+
+    @property
+    def unit(self):
+        return self.material.unit if self.material_id else None
+
+    def __str__(self) -> str:
+        return f"{self.request_id} - {self.material} - {self.requested_quantity}"
+
+    def clean(self):
+        super().clean()
+        if not self.material_id:
+            raise ValidationError("Material obrigatorio.")
+        if self.requested_quantity is None or self.requested_quantity <= 0:
+            raise ValidationError("Quantidade solicitada deve ser maior que zero.")
+        if self.material_id and self.requested_quantity is not None:
+            from stock.material_request import validate_material_request_item
+
+            validate_material_request_item(self)
 
     def save(self, *args, **kwargs):
         self.full_clean()
