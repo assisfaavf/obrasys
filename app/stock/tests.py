@@ -8,7 +8,7 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.contrib.staticfiles import finders
 from django.test import TestCase
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 from openpyxl import Workbook
 
 from billing.models import MeasurementLine, MeasurementPeriod, WorkflowStatus
@@ -60,7 +60,31 @@ from stock.services import register_stock_movement
 
 
 class StockCoreTests(TestCase):
+    ADVANCED_STOCK_TEST_PREFIXES = (
+        "test_measurement_admin_material_inline",
+        "test_create_measurement_material",
+        "test_finalize_measurement",
+        "test_measurement_consumption",
+        "test_reopen_measurement",
+        "test_cancel_measurement",
+        "test_creating_measurement_material_consumes",
+        "test_increasing_measurement_material",
+        "test_decreasing_measurement_material",
+        "test_deleting_measurement_material",
+        "test_changing_measurement_material",
+        "test_saving_measurement_material",
+        "test_sync_pending_measurement",
+        "test_pending_consumption",
+        "test_low_stock_alert",
+        "test_generate_purchase_request",
+        "test_stock_movements_are_linked_to_measurement",
+        "test_measurement_consumption_uses_material_unit",
+        "test_consumption_sync_is_atomic",
+    )
+
     def setUp(self):
+        if self._testMethodName.startswith(self.ADVANCED_STOCK_TEST_PREFIXES):
+            self.skipTest("Feature avancada preservada apenas em archive/estoque-features-avancadas.")
         self.unit = Unit.objects.create(code="un", name="Unidade")
         self.client_obj = Client.objects.create(name="Cliente Estoque")
         self.project = Project.objects.create(name="Obra Estoque", client=self.client_obj)
@@ -314,6 +338,42 @@ class StockCoreTests(TestCase):
         self.assertEqual(
             StockBalance.objects.get(material=material, location=destination).quantity,
             Decimal("4.000"),
+        )
+
+    def test_mvp_admin_hides_advanced_stock_features(self):
+        hidden_admin_routes = (
+            "admin:stock_materialrequest_changelist",
+            "admin:stock_purchaserequest_changelist",
+            "admin:stock_measurementmaterial_changelist",
+            "admin:stock_measurementstockconsumption_changelist",
+        )
+
+        for route in hidden_admin_routes:
+            with self.assertRaises(NoReverseMatch):
+                reverse(route)
+
+    def test_mvp_measurement_material_does_not_auto_consume_stock(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(
+            material=material,
+            location=project_location,
+            movement_type=StockMovementType.IN,
+            quantity=Decimal("10"),
+        )
+
+        MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("3"),
+        )
+
+        self.assertFalse(MeasurementStockConsumption.objects.exists())
+        self.assertEqual(
+            StockBalance.objects.get(material=material, location=project_location).quantity,
+            Decimal("10.000"),
         )
 
     def test_measurement_admin_material_inline_includes_stock_location_and_available_quantity(self):
@@ -1350,6 +1410,7 @@ class StockImportTests(TestCase):
 
 class MaterialRequestTests(TestCase):
     def setUp(self):
+        self.skipTest("Feature avancada preservada apenas em archive/estoque-features-avancadas.")
         self.unit = Unit.objects.create(code="UN", name="Unidade")
         self.meter_unit = Unit.objects.create(code="M", name="Metro")
         self.client_obj = Client.objects.create(name="Cliente Requisicao")

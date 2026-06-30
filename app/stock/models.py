@@ -796,7 +796,7 @@ class MeasurementMaterial(models.Model):
                 raise ValidationError("O local de retirada deve pertencer a obra da medicao.")
 
     def save(self, *args, **kwargs):
-        sync_stock = kwargs.pop("sync_stock", True)
+        sync_stock = kwargs.pop("sync_stock", False)
         previous = None
         if self.pk:
             previous = (
