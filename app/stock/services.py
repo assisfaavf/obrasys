@@ -47,6 +47,13 @@ def calculate_balance_after(
     return _q_qty((current_quantity or Decimal("0")) + _movement_delta(movement_type, quantity))
 
 
+def _refresh_alerts_for_balance(balance: StockBalance) -> None:
+    from stock.stock_alerts import check_stock_alerts_for_balance, resolve_measurement_shortage_alert_if_regularized
+
+    check_stock_alerts_for_balance(balance)
+    resolve_measurement_shortage_alert_if_regularized(balance.material, balance.location)
+
+
 @transaction.atomic
 def register_stock_movement(
     *,
@@ -83,6 +90,7 @@ def register_stock_movement(
 
     balance.quantity = new_quantity
     balance.save(update_fields=["quantity", "updated_at"])
+    _refresh_alerts_for_balance(balance)
 
     if movement_type == StockMovementType.TRANSFER:
         target_balance, _ = (
@@ -91,6 +99,7 @@ def register_stock_movement(
         )
         target_balance.quantity = _q_qty(target_balance.quantity + quantity)
         target_balance.save(update_fields=["quantity", "updated_at"])
+        _refresh_alerts_for_balance(target_balance)
 
     return StockMovement.objects.create(
         material=material,

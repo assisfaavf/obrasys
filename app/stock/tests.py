@@ -37,12 +37,16 @@ from stock.models import (
     MeasurementStockConsumptionType,
     PurchaseRequest,
     PurchaseRequestItem,
+    StockAlert,
+    StockAlertStatus,
+    StockAlertType,
     StockBalance,
     StockImport,
     StockImportItemStatus,
     StockImportStatus,
     StockLocation,
     StockLocationType,
+    StockMinimumRule,
     StockMovement,
     StockMovementType,
 )
@@ -57,6 +61,7 @@ from stock.material_request import (
 from stock.material_request_processing import process_material_request
 from stock.purchase_import import confirm_stock_import, match_import_items, parse_stock_import_file
 from stock.services import register_stock_movement
+from stock.stock_alerts import generate_purchase_need_from_alerts
 
 
 class StockCoreTests(TestCase):
@@ -872,6 +877,242 @@ class StockCoreTests(TestCase):
 
         self.assertEqual(StockBalance.objects.get(material=material, location=project_location).quantity, Decimal("5.000"))
         self.assertFalse(MeasurementMaterial.objects.exists())
+
+    def test_create_stock_minimum_rule(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+
+        rule = StockMinimumRule.objects.create(
+            material=material,
+            stock_location=project_location,
+            minimum_quantity=Decimal("5"),
+        )
+
+        self.assertTrue(rule.is_active)
+        self.assertEqual(rule.project, self.project)
+        self.assertEqual(rule.minimum_quantity, Decimal("5"))
+
+    def test_low_stock_alert_is_created_when_balance_below_minimum(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        StockMinimumRule.objects.create(material=material, stock_location=project_location, minimum_quantity=Decimal("5"))
+
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("3"))
+
+        alert = StockAlert.objects.get(alert_type=StockAlertType.LOW_STOCK)
+        self.assertEqual(alert.status, StockAlertStatus.OPEN)
+        self.assertEqual(alert.current_balance, Decimal("3.000"))
+        self.assertEqual(alert.minimum_quantity, Decimal("5.000"))
+        self.assertEqual(alert.suggested_purchase_quantity, Decimal("2.000"))
+
+    def test_low_stock_alert_is_not_created_when_balance_is_above_minimum(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        StockMinimumRule.objects.create(material=material, stock_location=project_location, minimum_quantity=Decimal("5"))
+
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("6"))
+
+        self.assertFalse(StockAlert.objects.exists())
+
+    def test_low_stock_alert_is_updated_instead_of_duplicated(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        StockMinimumRule.objects.create(material=material, stock_location=project_location, minimum_quantity=Decimal("10"))
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("4"))
+
+        register_stock_movement(
+            material=material,
+            location=project_location,
+            movement_type=StockMovementType.ADJUST_NEGATIVE,
+            quantity=Decimal("1"),
+        )
+
+        self.assertEqual(StockAlert.objects.filter(alert_type=StockAlertType.LOW_STOCK).count(), 1)
+        alert = StockAlert.objects.get(alert_type=StockAlertType.LOW_STOCK)
+        self.assertEqual(alert.current_balance, Decimal("3.000"))
+        self.assertEqual(alert.suggested_purchase_quantity, Decimal("7.000"))
+
+    def test_low_stock_alert_is_resolved_when_balance_is_regularized(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        StockMinimumRule.objects.create(material=material, stock_location=project_location, minimum_quantity=Decimal("5"))
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("3"))
+
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("2"))
+
+        alert = StockAlert.objects.get(alert_type=StockAlertType.LOW_STOCK)
+        self.assertEqual(alert.status, StockAlertStatus.RESOLVED)
+        self.assertIsNotNone(alert.resolved_at)
+
+    def test_measurement_shortage_alert_is_created_from_pending_consumption(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+
+        MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+
+        alert = StockAlert.objects.get(alert_type=StockAlertType.REAL_SHORTAGE_FROM_MEASUREMENT)
+        self.assertEqual(alert.status, StockAlertStatus.OPEN)
+        self.assertEqual(alert.project, self.project)
+        self.assertEqual(alert.suggested_purchase_quantity, Decimal("5.000"))
+
+    def test_measurement_shortage_alert_updates_when_measurement_quantity_changes(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+
+        applied.quantity = Decimal("3")
+        applied.save()
+
+        self.assertEqual(StockAlert.objects.filter(alert_type=StockAlertType.REAL_SHORTAGE_FROM_MEASUREMENT).count(), 1)
+        alert = StockAlert.objects.get(alert_type=StockAlertType.REAL_SHORTAGE_FROM_MEASUREMENT)
+        self.assertEqual(alert.suggested_purchase_quantity, Decimal("3.000"))
+
+    def test_measurement_shortage_alert_is_resolved_when_measurement_material_is_deleted(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+
+        applied.delete()
+
+        alert = StockAlert.objects.get(alert_type=StockAlertType.REAL_SHORTAGE_FROM_MEASUREMENT)
+        self.assertEqual(alert.status, StockAlertStatus.RESOLVED)
+        self.assertEqual(alert.suggested_purchase_quantity, Decimal("0.000"))
+
+    def test_generate_purchase_need_from_open_alerts(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+        alert = StockAlert.objects.get(alert_type=StockAlertType.REAL_SHORTAGE_FROM_MEASUREMENT)
+
+        purchase_requests = generate_purchase_need_from_alerts([alert], user=self.user)
+
+        self.assertEqual(len(purchase_requests), 1)
+        purchase_item = PurchaseRequestItem.objects.get(purchase_request=purchase_requests[0])
+        self.assertEqual(purchase_item.stock_alert, alert)
+        self.assertEqual(purchase_item.material, material)
+        self.assertEqual(purchase_item.quantity, Decimal("5.000"))
+
+    def test_generate_purchase_need_marks_alerts_as_in_purchase(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+        alert = StockAlert.objects.get(alert_type=StockAlertType.REAL_SHORTAGE_FROM_MEASUREMENT)
+
+        generate_purchase_need_from_alerts([alert], user=self.user)
+
+        alert.refresh_from_db()
+        self.assertEqual(alert.status, StockAlertStatus.IN_PURCHASE)
+
+    def test_generate_purchase_need_does_not_change_stock_or_create_movement(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+        alert = StockAlert.objects.get(alert_type=StockAlertType.REAL_SHORTAGE_FROM_MEASUREMENT)
+
+        generate_purchase_need_from_alerts([alert], user=self.user)
+
+        self.assertEqual(StockBalance.objects.get(material=material, location=project_location).quantity, Decimal("0.000"))
+        self.assertFalse(StockMovement.objects.exists())
+
+    def test_purchase_need_item_unit_comes_from_material(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+        alert = StockAlert.objects.get(alert_type=StockAlertType.REAL_SHORTAGE_FROM_MEASUREMENT)
+
+        generate_purchase_need_from_alerts([alert], user=self.user)
+
+        self.assertEqual(PurchaseRequestItem.objects.get().unit, material.unit)
+
+    def test_stock_alerts_are_separated_by_project_location(self):
+        material = self._create_material()
+        first_location = self._create_project_location()
+        second_project = Project.objects.create(name="Obra B", client=self.client_obj)
+        second_location = StockLocation.objects.create(
+            code="OBRA-02",
+            name="Almoxarifado da obra B",
+            location_type=StockLocationType.PROJECT,
+            project=second_project,
+        )
+        StockMinimumRule.objects.create(material=material, stock_location=first_location, minimum_quantity=Decimal("5"))
+        StockMinimumRule.objects.create(material=material, stock_location=second_location, minimum_quantity=Decimal("5"))
+
+        register_stock_movement(material=material, location=first_location, movement_type=StockMovementType.IN, quantity=Decimal("2"))
+        register_stock_movement(material=material, location=second_location, movement_type=StockMovementType.IN, quantity=Decimal("3"))
+
+        self.assertEqual(StockAlert.objects.filter(alert_type=StockAlertType.LOW_STOCK).count(), 2)
+        self.assertEqual(set(StockAlert.objects.values_list("project__name", flat=True)), {"Obra Estoque", "Obra B"})
+
+    def test_stock_import_can_resolve_low_stock_alert_after_restock(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        StockMinimumRule.objects.create(material=material, stock_location=project_location, minimum_quantity=Decimal("5"))
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("3"))
+        import_batch = StockImport.objects.create(
+            original_file=SimpleUploadedFile("entrada.csv", b"descricao,unidade,quantidade\n"),
+            destination_location=project_location,
+            supplier="Fornecedor teste",
+            status=StockImportStatus.PENDING_REVIEW,
+            created_by=self.user,
+        )
+        import_batch.items.create(
+            row_number=1,
+            original_description=material.name,
+            original_unit=material.unit.code,
+            raw_quantity="3",
+            original_quantity=Decimal("3"),
+            confirmed_quantity=Decimal("3"),
+            material=material,
+            status=StockImportItemStatus.OK,
+        )
+
+        confirm_stock_import(import_batch, user=self.user)
+
+        alert = StockAlert.objects.get(alert_type=StockAlertType.LOW_STOCK)
+        self.assertEqual(alert.status, StockAlertStatus.RESOLVED)
+        self.assertEqual(StockBalance.objects.get(material=material, location=project_location).quantity, Decimal("6.000"))
 
     def _create_material(self):
         return Material.objects.create(code="MAT-001", name="Cabo flexivel 2,5mm", unit=self.unit)

@@ -20,9 +20,20 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - Ajuste automatico do estoque ao alterar quantidade, material ou local do material aplicado.
 - Estorno de estoque ao excluir material aplicado, reabrir, rejeitar ou cancelar uma medicao com baixa aplicada.
 - Registro de consumo pendente quando a quantidade aplicada supera o saldo disponivel da obra.
-- Alerta por estoque minimo configurado em `Stock balances`.
-- Geracao de pedido/lista de compra por falta real ou recomposicao de estoque minimo.
 - Historico de consumo vinculado a medicao e a movimentacao de estoque.
+
+## Alertas de Estoque e Necessidade de Compra
+
+- Cadastro de regras de estoque minimo por material e local de estoque.
+- Geracao automatica de alerta quando o saldo fica abaixo do minimo configurado.
+- Geracao automatica de alerta quando uma medicao registra consumo pendente por falta de saldo real na obra.
+- Atualizacao de alertas abertos em vez de duplicar alertas para o mesmo material, obra, local e tipo.
+- Resolucao automatica de alerta de estoque minimo quando o saldo volta ao minimo configurado.
+- Resolucao de alerta de falta real quando o consumo pendente da medicao e zerado ou estornado.
+- Visualizacao e controle de alertas pelo Django Admin.
+- Acoes no admin para gerar pedido/lista de compra, resolver, ignorar e reabrir alertas.
+- Pedido de compra gerado a partir de alertas sem alterar saldo e sem criar movimentacao de estoque.
+- Unidade dos itens de compra herdada automaticamente do cadastro do material.
 
 ## Carga Inicial de Materiais e Estoque
 

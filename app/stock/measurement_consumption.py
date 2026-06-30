@@ -194,6 +194,7 @@ def _consume_delta(
         ]
     )
     _update_measurement_material_status(measurement_material, new_consumed, pending)
+    _refresh_measurement_shortage_alert(consumption)
 
 
 def _reverse_delta(
@@ -225,6 +226,7 @@ def _reverse_delta(
     consumption.status = _status_for(new_consumed, pending)
     consumption.save(update_fields=["consumed_quantity", "pending_quantity", "reversal_movement", "status", "updated_at"])
     _update_measurement_material_status(measurement_material, new_consumed, pending)
+    _refresh_measurement_shortage_alert(consumption)
 
 
 def _refresh_consumption_status(measurement_material: MeasurementMaterial, consumption: MeasurementStockConsumption) -> None:
@@ -234,10 +236,17 @@ def _refresh_consumption_status(measurement_material: MeasurementMaterial, consu
     consumption.status = _status_for(consumed, pending)
     consumption.save(update_fields=["pending_quantity", "status", "updated_at"])
     _update_measurement_material_status(measurement_material, consumed, pending)
+    _refresh_measurement_shortage_alert(consumption)
 
 
 def _update_measurement_material_status(measurement_material: MeasurementMaterial, consumed: Decimal, pending: Decimal) -> None:
     MeasurementMaterial.objects.filter(pk=measurement_material.pk).update(status=_material_status_for(consumed, pending))
+
+
+def _refresh_measurement_shortage_alert(consumption: MeasurementStockConsumption) -> None:
+    from stock.stock_alerts import create_or_update_measurement_shortage_alert
+
+    create_or_update_measurement_shortage_alert(consumption)
 
 
 @transaction.atomic
@@ -286,6 +295,7 @@ def reverse_measurement_material_consumption(
     consumption.note = reason or consumption.note
     consumption.save(update_fields=["consumed_quantity", "pending_quantity", "reversal_movement", "status", "note", "updated_at"])
     MeasurementMaterial.objects.filter(pk=measurement_material.pk).update(status=MeasurementMaterialStatus.REVERSED)
+    _refresh_measurement_shortage_alert(consumption)
     return consumption
 
 

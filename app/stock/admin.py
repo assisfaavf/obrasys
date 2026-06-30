@@ -17,10 +17,13 @@ from stock.models import (
     MeasurementStockConsumption,
     PurchaseRequest,
     PurchaseRequestItem,
+    StockAlert,
+    StockAlertStatus,
     StockBalance,
     StockImport,
     StockImportItem,
     StockLocation,
+    StockMinimumRule,
     StockMovement,
 )
 from stock.material_request import approve_material_request, calculate_material_request, cancel_material_request
@@ -28,6 +31,13 @@ from stock.material_request_processing import process_material_request
 from stock.measurement_consumption import generate_purchase_request_from_real_shortage
 from stock.purchase_import import cancel_stock_import, confirm_stock_import, parse_stock_import_file
 from stock.services import calculate_balance_after, register_stock_movement
+from stock.stock_alerts import (
+    check_stock_alerts_for_balance,
+    dismiss_stock_alert,
+    generate_purchase_need_from_alerts,
+    reopen_stock_alert,
+    resolve_stock_alert,
+)
 
 
 @admin.register(Material)
@@ -84,6 +94,101 @@ class StockBalanceAdmin(admin.ModelAdmin):
                 self.message_user(request, f"Pedido {purchase_request.id} gerado para {project}.", messages.SUCCESS)
             else:
                 self.message_user(request, f"Nenhuma falta nova para {project}.", messages.INFO)
+
+
+@admin.register(StockMinimumRule)
+class StockMinimumRuleAdmin(admin.ModelAdmin):
+    list_display = ("material", "stock_location", "project", "minimum_quantity", "is_active", "updated_at")
+    list_filter = ("is_active", "stock_location__location_type", "stock_location__project")
+    search_fields = ("material__code", "material__name", "stock_location__code", "stock_location__name")
+    ordering = ("stock_location", "material")
+    readonly_fields = ("created_at", "updated_at")
+
+    @admin.display(description="Obra")
+    def project(self, obj):
+        return obj.stock_location.project if obj.stock_location_id else "-"
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        balance = StockBalance.objects.filter(material=obj.material, location=obj.stock_location).first()
+        if balance:
+            check_stock_alerts_for_balance(balance)
+
+
+@admin.register(StockAlert)
+class StockAlertAdmin(admin.ModelAdmin):
+    list_display = (
+        "material",
+        "project",
+        "stock_location",
+        "alert_type",
+        "status",
+        "current_balance",
+        "minimum_quantity",
+        "shortage_quantity",
+        "suggested_purchase_quantity",
+        "created_at",
+        "resolved_at",
+    )
+    list_filter = ("status", "alert_type", "project", "stock_location")
+    search_fields = ("material__code", "material__name", "stock_location__name", "message")
+    ordering = ("status", "-created_at", "-id")
+    readonly_fields = (
+        "material",
+        "project",
+        "stock_location",
+        "alert_type",
+        "current_balance",
+        "minimum_quantity",
+        "shortage_quantity",
+        "suggested_purchase_quantity",
+        "source_model",
+        "source_id",
+        "message",
+        "created_at",
+        "updated_at",
+        "resolved_at",
+    )
+    actions = ("generate_purchase_need", "mark_as_resolved", "dismiss_alerts", "reopen_alerts")
+
+    @admin.action(description="Gerar pedido/lista de compra")
+    def generate_purchase_need(self, request, queryset):
+        try:
+            purchase_requests = generate_purchase_need_from_alerts(
+                queryset,
+                user=request.user if request.user.is_authenticated else None,
+            )
+        except ValidationError as exc:
+            self.message_user(request, "; ".join(exc.messages), messages.ERROR)
+            return
+
+        if not purchase_requests:
+            self.message_user(request, "Nenhum alerta aberto elegivel para pedido.", messages.INFO)
+            return
+        for purchase_request in purchase_requests:
+            self.message_user(
+                request,
+                f"Pedido {purchase_request.id} gerado com {purchase_request.total_items} item(ns).",
+                messages.SUCCESS,
+            )
+
+    @admin.action(description="Marcar como resolvido")
+    def mark_as_resolved(self, request, queryset):
+        for alert in queryset:
+            resolve_stock_alert(alert)
+        self.message_user(request, f"{queryset.count()} alerta(s) resolvido(s).", messages.SUCCESS)
+
+    @admin.action(description="Ignorar alerta")
+    def dismiss_alerts(self, request, queryset):
+        for alert in queryset:
+            dismiss_stock_alert(alert)
+        self.message_user(request, f"{queryset.count()} alerta(s) ignorado(s).", messages.SUCCESS)
+
+    @admin.action(description="Reabrir alerta")
+    def reopen_alerts(self, request, queryset):
+        for alert in queryset:
+            reopen_stock_alert(alert)
+        self.message_user(request, f"{queryset.count()} alerta(s) reaberto(s).", messages.SUCCESS)
 
 
 class InitialStockImportItemInline(admin.TabularInline):
@@ -203,8 +308,18 @@ class MaterialRequestItemInline(admin.TabularInline):
 class PurchaseRequestItemInline(admin.TabularInline):
     model = PurchaseRequestItem
     extra = 0
-    fields = ("material", "quantity", "unit", "material_request_item", "status", "note")
-    readonly_fields = ("material", "quantity", "unit", "material_request_item", "status", "note")
+    fields = ("material", "quantity", "unit", "material_request_item", "measurement_stock_consumption", "stock_balance", "stock_alert", "status", "note")
+    readonly_fields = (
+        "material",
+        "quantity",
+        "unit",
+        "material_request_item",
+        "measurement_stock_consumption",
+        "stock_balance",
+        "stock_alert",
+        "status",
+        "note",
+    )
 
 
 @admin.register(InitialStockImport)

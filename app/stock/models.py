@@ -116,6 +116,21 @@ class PurchaseRequestItemStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelado"
 
 
+class StockAlertType(models.TextChoices):
+    LOW_STOCK = "LOW_STOCK", "Estoque baixo"
+    REAL_SHORTAGE_FROM_MEASUREMENT = "REAL_SHORTAGE_FROM_MEASUREMENT", "Falta real da medicao"
+    PENDING_MEASUREMENT_CONSUMPTION = "PENDING_MEASUREMENT_CONSUMPTION", "Consumo pendente da medicao"
+    MANUAL_REVIEW = "MANUAL_REVIEW", "Revisao manual"
+
+
+class StockAlertStatus(models.TextChoices):
+    OPEN = "OPEN", "Aberto"
+    IN_PURCHASE = "IN_PURCHASE", "Em compra"
+    RESOLVED = "RESOLVED", "Resolvido"
+    DISMISSED = "DISMISSED", "Ignorado"
+    CANCELLED = "CANCELLED", "Cancelado"
+
+
 class Material(models.Model):
     code = models.CharField(max_length=40, unique=True)
     name = models.CharField(max_length=255)
@@ -236,6 +251,97 @@ class StockBalance(models.Model):
             raise ValidationError("Saldo de estoque nao pode ser negativo.")
 
     def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class StockMinimumRule(models.Model):
+    material = models.ForeignKey("stock.Material", on_delete=models.CASCADE, related_name="minimum_rules")
+    stock_location = models.ForeignKey("stock.StockLocation", on_delete=models.CASCADE, related_name="minimum_rules")
+    minimum_quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["stock_location", "material"]
+        constraints = [
+            models.UniqueConstraint(fields=["material", "stock_location"], name="uniq_stock_min_rule_material_loc"),
+            models.CheckConstraint(check=Q(minimum_quantity__gte=0), name="stock_min_rule_quantity_non_negative"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.material} @ {self.stock_location}: minimo {self.minimum_quantity}"
+
+    @property
+    def project(self):
+        return self.stock_location.project if self.stock_location_id else None
+
+    def clean(self):
+        super().clean()
+        if self.minimum_quantity is not None and self.minimum_quantity < 0:
+            raise ValidationError("Estoque minimo nao pode ser negativo.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class StockAlert(models.Model):
+    material = models.ForeignKey("stock.Material", on_delete=models.PROTECT, related_name="stock_alerts")
+    project = models.ForeignKey(
+        "core.Project",
+        on_delete=models.CASCADE,
+        related_name="stock_alerts",
+        null=True,
+        blank=True,
+    )
+    stock_location = models.ForeignKey("stock.StockLocation", on_delete=models.PROTECT, related_name="stock_alerts")
+    alert_type = models.CharField(max_length=40, choices=StockAlertType.choices)
+    status = models.CharField(max_length=20, choices=StockAlertStatus.choices, default=StockAlertStatus.OPEN)
+    current_balance = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    minimum_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    shortage_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    suggested_purchase_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    source_model = models.CharField(max_length=100, blank=True, default="")
+    source_id = models.PositiveIntegerField(null=True, blank=True)
+    message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["status", "-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["material", "stock_location", "alert_type", "status"], name="idx_stock_alert_active"),
+            models.Index(fields=["project", "status"], name="idx_stock_alert_project_status"),
+        ]
+        constraints = [
+            models.CheckConstraint(check=Q(current_balance__gte=0), name="stock_alert_current_non_negative"),
+            models.CheckConstraint(check=Q(minimum_quantity__gte=0), name="stock_alert_minimum_non_negative"),
+            models.CheckConstraint(check=Q(shortage_quantity__gte=0), name="stock_alert_shortage_non_negative"),
+            models.CheckConstraint(check=Q(suggested_purchase_quantity__gte=0), name="stock_alert_suggested_non_negative"),
+        ]
+
+    @property
+    def unit(self):
+        return self.material.unit if self.material_id else None
+
+    def __str__(self) -> str:
+        return f"{self.get_alert_type_display()} - {self.material} - {self.stock_location}"
+
+    def clean(self):
+        super().clean()
+        if self.stock_location_id:
+            self.project_id = self.stock_location.project_id
+        if self.current_balance is not None and self.current_balance < 0:
+            raise ValidationError("Saldo atual do alerta nao pode ser negativo.")
+        if self.suggested_purchase_quantity is not None and self.suggested_purchase_quantity < 0:
+            raise ValidationError("Quantidade sugerida nao pode ser negativa.")
+
+    def save(self, *args, **kwargs):
+        if self.stock_location_id:
+            self.project_id = self.stock_location.project_id
         self.full_clean()
         super().save(*args, **kwargs)
 
@@ -700,6 +806,13 @@ class PurchaseRequestItem(models.Model):
         null=True,
         blank=True,
     )
+    stock_alert = models.OneToOneField(
+        "stock.StockAlert",
+        on_delete=models.PROTECT,
+        related_name="purchase_request_item",
+        null=True,
+        blank=True,
+    )
     material = models.ForeignKey("stock.Material", on_delete=models.PROTECT, related_name="purchase_request_items")
     quantity = models.DecimalField(max_digits=14, decimal_places=3)
     unit = models.ForeignKey("catalog.Unit", on_delete=models.PROTECT, related_name="purchase_request_items")
@@ -738,6 +851,8 @@ class PurchaseRequestItem(models.Model):
             and self.measurement_stock_consumption.material_id != self.material_id
         ):
             raise ValidationError("Item do pedido deve usar o mesmo material do consumo.")
+        if self.stock_alert_id and self.material_id and self.stock_alert.material_id != self.material_id:
+            raise ValidationError("Item do pedido deve usar o mesmo material do alerta.")
 
     def save(self, *args, **kwargs):
         if self.material_id:
