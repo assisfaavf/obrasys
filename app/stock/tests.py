@@ -18,6 +18,8 @@ from catalog.models import BudgetItem
 from catalog.models import Unit
 from core.models import Client, Project
 from stock.measurement_consumption import apply_measurement_stock_consumption
+from stock.measurement_consumption import generate_purchase_request_from_real_shortage
+from stock.measurement_consumption import sync_pending_measurement_stock_consumptions
 from stock.models import (
     InitialStockImport,
     InitialStockImportItemStatus,
@@ -31,6 +33,7 @@ from stock.models import (
     MeasurementMaterial,
     MeasurementMaterialStatus,
     MeasurementStockConsumption,
+    MeasurementStockConsumptionStatus,
     MeasurementStockConsumptionType,
     PurchaseRequest,
     PurchaseRequestItem,
@@ -402,10 +405,11 @@ class StockCoreTests(TestCase):
 
         period.refresh_from_db()
         self.assertEqual(period.workflow_status, WorkflowStatus.DRAFT)
-        self.assertFalse(MeasurementStockConsumption.objects.exists())
+        consumption = MeasurementStockConsumption.objects.get()
+        self.assertEqual(consumption.pending_quantity, Decimal("2.000"))
         self.assertEqual(
             StockBalance.objects.get(material=material, location=project_location).quantity,
-            Decimal("2.000"),
+            Decimal("0.000"),
         )
 
     def test_measurement_consumption_is_not_duplicated(self):
@@ -507,6 +511,367 @@ class StockCoreTests(TestCase):
             ).count(),
             1,
         )
+
+    def test_creating_measurement_material_consumes_stock_immediately(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(
+            material=material,
+            location=project_location,
+            movement_type=StockMovementType.IN,
+            quantity=Decimal("10"),
+        )
+
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("3"),
+        )
+
+        applied.refresh_from_db()
+        consumption = MeasurementStockConsumption.objects.get(measurement_material=applied)
+        self.assertEqual(applied.status, MeasurementMaterialStatus.APPLIED)
+        self.assertEqual(consumption.consumed_quantity, Decimal("3.000"))
+        self.assertEqual(consumption.pending_quantity, Decimal("0.000"))
+        self.assertEqual(
+            StockBalance.objects.get(material=material, location=project_location).quantity,
+            Decimal("7.000"),
+        )
+
+    def test_increasing_measurement_material_consumes_only_delta(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("3"),
+        )
+
+        applied.quantity = Decimal("5")
+        applied.save()
+
+        consumption = MeasurementStockConsumption.objects.exclude(
+            status=MeasurementStockConsumptionStatus.REVERSED
+        ).get(measurement_material=applied)
+        self.assertEqual(consumption.consumed_quantity, Decimal("5.000"))
+        self.assertEqual(
+            StockBalance.objects.get(material=material, location=project_location).quantity,
+            Decimal("5.000"),
+        )
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovementType.MEASUREMENT_OUT).count(),
+            2,
+        )
+
+    def test_decreasing_measurement_material_reverses_only_delta(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+
+        applied.quantity = Decimal("2")
+        applied.save()
+
+        consumption = MeasurementStockConsumption.objects.exclude(
+            status=MeasurementStockConsumptionStatus.REVERSED
+        ).get(measurement_material=applied)
+        self.assertEqual(consumption.consumed_quantity, Decimal("2.000"))
+        self.assertEqual(
+            StockBalance.objects.get(material=material, location=project_location).quantity,
+            Decimal("8.000"),
+        )
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovementType.MEASUREMENT_OUT_REVERSAL).count(),
+            1,
+        )
+
+    def test_deleting_measurement_material_reverses_consumption(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+
+        applied.delete()
+
+        self.assertEqual(
+            StockBalance.objects.get(material=material, location=project_location).quantity,
+            Decimal("10.000"),
+        )
+        self.assertEqual(
+            MeasurementStockConsumption.objects.filter(status=MeasurementStockConsumptionStatus.REVERSED).count(),
+            2,
+        )
+
+    def test_changing_measurement_material_reverses_old_and_consumes_new(self):
+        material = self._create_material()
+        other_material = Material.objects.create(code="MAT-002", name="Cabo flexivel 4mm", unit=self.unit)
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+        register_stock_movement(material=other_material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("8"))
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("4"),
+        )
+
+        applied.material = other_material
+        applied.save()
+
+        self.assertEqual(StockBalance.objects.get(material=material, location=project_location).quantity, Decimal("10.000"))
+        self.assertEqual(StockBalance.objects.get(material=other_material, location=project_location).quantity, Decimal("4.000"))
+        applied.refresh_from_db()
+        self.assertEqual(applied.material, other_material)
+
+    def test_measurement_material_in_finalized_period_does_not_auto_consume(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        period.workflow_status = WorkflowStatus.FINALIZED
+        period.save(update_fields=["workflow_status"])
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+
+        MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("3"),
+        )
+
+        self.assertEqual(
+            StockBalance.objects.get(material=material, location=project_location).quantity,
+            Decimal("10.000"),
+        )
+        self.assertFalse(MeasurementStockConsumption.objects.exists())
+
+    def test_saving_measurement_material_without_change_does_not_duplicate_consumption(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("3"),
+        )
+
+        applied.note = "sem mudar quantidade"
+        applied.save()
+
+        self.assertEqual(
+            MeasurementStockConsumption.objects.exclude(status=MeasurementStockConsumptionStatus.REVERSED).count(),
+            1,
+        )
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovementType.MEASUREMENT_OUT).count(),
+            1,
+        )
+
+    def test_sync_pending_measurement_stock_consumptions_backfills_existing_materials(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+        applied = MeasurementMaterial(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("3"),
+        )
+        applied.save(sync_stock=False)
+
+        result = sync_pending_measurement_stock_consumptions(measurement=period)
+
+        self.assertEqual(result["synced"], 1)
+        consumption = MeasurementStockConsumption.objects.get(measurement_material=applied)
+        self.assertEqual(consumption.consumed_quantity, Decimal("3.000"))
+        self.assertEqual(
+            StockBalance.objects.get(material=material, location=project_location).quantity,
+            Decimal("7.000"),
+        )
+
+    def test_sync_pending_measurement_stock_consumptions_is_idempotent(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+        applied = MeasurementMaterial(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("3"),
+        )
+        applied.save(sync_stock=False)
+
+        sync_pending_measurement_stock_consumptions(measurement=period)
+        sync_pending_measurement_stock_consumptions(measurement=period)
+
+        self.assertEqual(MeasurementStockConsumption.objects.count(), 1)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovementType.MEASUREMENT_OUT).count(),
+            1,
+        )
+        self.assertEqual(
+            StockBalance.objects.get(material=material, location=project_location).quantity,
+            Decimal("7.000"),
+        )
+
+    def test_pending_consumption_does_not_make_stock_negative(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("2"))
+
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+
+        applied.refresh_from_db()
+        consumption = MeasurementStockConsumption.objects.get(measurement_material=applied)
+        self.assertEqual(applied.status, MeasurementMaterialStatus.PARTIAL)
+        self.assertEqual(consumption.pending_quantity, Decimal("3.000"))
+        self.assertEqual(StockBalance.objects.get(material=material, location=project_location).quantity, Decimal("0.000"))
+
+    def test_low_stock_alert_uses_minimum_quantity(self):
+        from stock.measurement_consumption import check_low_stock_for_work
+
+        material = self._create_material()
+        project_location = self._create_project_location()
+        balance = StockBalance.objects.create(
+            material=material,
+            location=project_location,
+            quantity=Decimal("2"),
+            minimum_quantity=Decimal("5"),
+        )
+
+        alerts = check_low_stock_for_work(self.project)
+
+        self.assertEqual(alerts[0]["balance"], balance)
+        self.assertEqual(alerts[0]["quantity"], Decimal("3.000"))
+
+    def test_generate_purchase_request_for_pending_consumption_shortage(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("2"))
+        MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("5"),
+        )
+
+        purchase_request = generate_purchase_request_from_real_shortage(self.project, user=self.user)
+
+        item = PurchaseRequestItem.objects.get(purchase_request=purchase_request)
+        self.assertEqual(item.material, material)
+        self.assertEqual(item.quantity, Decimal("3.000"))
+        self.assertIsNotNone(item.measurement_stock_consumption_id)
+
+    def test_generate_purchase_request_for_minimum_stock_shortage(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        balance = StockBalance.objects.create(
+            material=material,
+            location=project_location,
+            quantity=Decimal("2"),
+            minimum_quantity=Decimal("5"),
+        )
+
+        purchase_request = generate_purchase_request_from_real_shortage(self.project, user=self.user)
+
+        item = PurchaseRequestItem.objects.get(purchase_request=purchase_request)
+        self.assertEqual(item.stock_balance, balance)
+        self.assertEqual(item.quantity, Decimal("3.000"))
+
+    def test_generate_purchase_request_does_not_duplicate_same_shortage(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        StockBalance.objects.create(
+            material=material,
+            location=project_location,
+            quantity=Decimal("2"),
+            minimum_quantity=Decimal("5"),
+        )
+
+        first = generate_purchase_request_from_real_shortage(self.project, user=self.user)
+        second = generate_purchase_request_from_real_shortage(self.project, user=self.user)
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(PurchaseRequestItem.objects.count(), 1)
+
+    def test_stock_movements_are_linked_to_measurement_material(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("5"))
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("3"),
+        )
+
+        movement = StockMovement.objects.get(movement_type=StockMovementType.MEASUREMENT_OUT)
+
+        self.assertEqual(movement.measurement_material, applied)
+        self.assertEqual(movement.measurement, period)
+
+    def test_measurement_consumption_uses_material_unit(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("5"))
+
+        applied = MeasurementMaterial.objects.create(
+            measurement=period,
+            material=material,
+            stock_location=project_location,
+            quantity=Decimal("3"),
+        )
+
+        self.assertEqual(applied.unit, material.unit)
+
+    def test_consumption_sync_is_atomic_on_movement_error(self):
+        material = self._create_material()
+        project_location = self._create_project_location()
+        period = self._create_measurement_period()
+        register_stock_movement(material=material, location=project_location, movement_type=StockMovementType.IN, quantity=Decimal("5"))
+
+        with mock.patch("stock.measurement_consumption.register_stock_movement", side_effect=ValidationError("falha")):
+            with self.assertRaisesMessage(ValidationError, "falha"):
+                MeasurementMaterial.objects.create(
+                    measurement=period,
+                    material=material,
+                    stock_location=project_location,
+                    quantity=Decimal("3"),
+                )
+
+        self.assertEqual(StockBalance.objects.get(material=material, location=project_location).quantity, Decimal("5.000"))
+        self.assertFalse(MeasurementMaterial.objects.exists())
 
     def _create_material(self):
         return Material.objects.create(code="MAT-001", name="Cabo flexivel 2,5mm", unit=self.unit)

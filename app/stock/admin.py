@@ -25,6 +25,7 @@ from stock.models import (
 )
 from stock.material_request import approve_material_request, calculate_material_request, cancel_material_request
 from stock.material_request_processing import process_material_request
+from stock.measurement_consumption import generate_purchase_request_from_real_shortage
 from stock.purchase_import import cancel_stock_import, confirm_stock_import, parse_stock_import_file
 from stock.services import calculate_balance_after, register_stock_movement
 
@@ -56,11 +57,33 @@ class StockLocationAdmin(admin.ModelAdmin):
 
 @admin.register(StockBalance)
 class StockBalanceAdmin(admin.ModelAdmin):
-    list_display = ("material", "location", "quantity", "updated_at")
+    list_display = ("material", "location", "quantity", "minimum_quantity", "is_low_stock", "updated_at")
     list_filter = ("location__location_type", "location__project")
     search_fields = ("material__code", "material__name", "location__code", "location__name")
     ordering = ("location", "material")
     readonly_fields = ("updated_at",)
+    actions = ("generate_purchase_for_low_stock",)
+
+    @admin.display(boolean=True, description="Baixo estoque")
+    def is_low_stock(self, obj):
+        return obj.minimum_quantity > 0 and obj.quantity <= obj.minimum_quantity
+
+    @admin.action(description="Gerar pedido de compra por falta real da obra")
+    def generate_purchase_for_low_stock(self, request, queryset):
+        projects = {
+            balance.location.project
+            for balance in queryset.select_related("location__project")
+            if balance.location.project_id
+        }
+        for project in projects:
+            purchase_request = generate_purchase_request_from_real_shortage(
+                project,
+                user=request.user if request.user.is_authenticated else None,
+            )
+            if purchase_request:
+                self.message_user(request, f"Pedido {purchase_request.id} gerado para {project}.", messages.SUCCESS)
+            else:
+                self.message_user(request, f"Nenhuma falta nova para {project}.", messages.INFO)
 
 
 class InitialStockImportItemInline(admin.TabularInline):
@@ -554,8 +577,19 @@ class MeasurementMaterialAdmin(admin.ModelAdmin):
 
 @admin.register(MeasurementStockConsumption)
 class MeasurementStockConsumptionAdmin(admin.ModelAdmin):
-    list_display = ("measurement", "measurement_material", "stock_movement", "consumption_type", "created_at")
-    list_filter = ("consumption_type", "measurement__project")
+    list_display = (
+        "measurement",
+        "measurement_material",
+        "material",
+        "stock_location",
+        "consumed_quantity",
+        "pending_quantity",
+        "status",
+        "stock_movement",
+        "reversal_movement",
+        "created_at",
+    )
+    list_filter = ("status", "consumption_type", "measurement__project")
     search_fields = (
         "measurement__project__name",
         "measurement_material__material__code",
@@ -563,4 +597,32 @@ class MeasurementStockConsumptionAdmin(admin.ModelAdmin):
         "stock_movement__note",
     )
     ordering = ("-created_at", "-id")
-    readonly_fields = ("measurement", "measurement_material", "stock_movement", "consumption_type", "created_at")
+    readonly_fields = (
+        "measurement",
+        "measurement_material",
+        "material",
+        "stock_location",
+        "consumed_quantity",
+        "pending_quantity",
+        "status",
+        "stock_movement",
+        "reversal_movement",
+        "consumption_type",
+        "note",
+        "created_at",
+        "updated_at",
+    )
+    actions = ("generate_purchase_for_real_shortage",)
+
+    @admin.action(description="Gerar pedido de compra por falta real")
+    def generate_purchase_for_real_shortage(self, request, queryset):
+        projects = {consumption.measurement.project for consumption in queryset.select_related("measurement__project")}
+        for project in projects:
+            purchase_request = generate_purchase_request_from_real_shortage(
+                project,
+                user=request.user if request.user.is_authenticated else None,
+            )
+            if purchase_request:
+                self.message_user(request, f"Pedido {purchase_request.id} gerado para {project}.", messages.SUCCESS)
+            else:
+                self.message_user(request, f"Nenhuma falta nova para {project}.", messages.INFO)
