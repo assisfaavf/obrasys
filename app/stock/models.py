@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 
 
@@ -26,12 +26,22 @@ class StockMovementType(models.TextChoices):
 class MeasurementMaterialStatus(models.TextChoices):
     PENDING = "PENDING", "Pendente"
     APPLIED = "APPLIED", "Baixado"
+    PARTIAL = "PARTIAL", "Parcial"
+    PENDING_STOCK = "PENDING_STOCK", "Pendente de estoque"
     REVERSED = "REVERSED", "Estornado"
 
 
 class MeasurementStockConsumptionType(models.TextChoices):
     OUT = "OUT", "Saida"
     REVERSAL = "REVERSAL", "Estorno"
+
+
+class MeasurementStockConsumptionStatus(models.TextChoices):
+    ACTIVE = "ACTIVE", "Ativo"
+    PENDING_STOCK = "PENDING_STOCK", "Pendente de estoque"
+    PARTIAL = "PARTIAL", "Parcial"
+    REVERSED = "REVERSED", "Estornado"
+    CANCELLED = "CANCELLED", "Cancelado"
 
 
 class InitialStockImportStatus(models.TextChoices):
@@ -207,6 +217,7 @@ class StockBalance(models.Model):
     material = models.ForeignKey("stock.Material", on_delete=models.CASCADE, related_name="balances")
     location = models.ForeignKey("stock.StockLocation", on_delete=models.CASCADE, related_name="balances")
     quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    minimum_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -246,6 +257,20 @@ class StockMovement(models.Model):
     occurred_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stock_movements",
+    )
+    measurement = models.ForeignKey(
+        "billing.MeasurementPeriod",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stock_movements",
+    )
+    measurement_material = models.ForeignKey(
+        "stock.MeasurementMaterial",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -614,6 +639,8 @@ class PurchaseRequest(models.Model):
         "stock.MaterialRequest",
         on_delete=models.PROTECT,
         related_name="purchase_request",
+        null=True,
+        blank=True,
     )
     status = models.CharField(
         max_length=20,
@@ -642,8 +669,6 @@ class PurchaseRequest(models.Model):
         super().clean()
         if not self.project_id:
             raise ValidationError("Obra obrigatoria.")
-        if not self.material_request_id:
-            raise ValidationError("Requisicao de materiais obrigatoria.")
         if self.project_id and self.material_request_id and self.project_id != self.material_request.project_id:
             raise ValidationError("Pedido de compra deve pertencer a mesma obra da requisicao.")
 
@@ -658,6 +683,22 @@ class PurchaseRequestItem(models.Model):
         "stock.MaterialRequestItem",
         on_delete=models.PROTECT,
         related_name="purchase_request_item",
+        null=True,
+        blank=True,
+    )
+    measurement_stock_consumption = models.OneToOneField(
+        "stock.MeasurementStockConsumption",
+        on_delete=models.PROTECT,
+        related_name="purchase_request_item",
+        null=True,
+        blank=True,
+    )
+    stock_balance = models.ForeignKey(
+        "stock.StockBalance",
+        on_delete=models.PROTECT,
+        related_name="purchase_request_items",
+        null=True,
+        blank=True,
     )
     material = models.ForeignKey("stock.Material", on_delete=models.PROTECT, related_name="purchase_request_items")
     quantity = models.DecimalField(max_digits=14, decimal_places=3)
@@ -690,6 +731,13 @@ class PurchaseRequestItem(models.Model):
             raise ValidationError("Unidade do pedido deve ser igual a unidade do material.")
         if self.material_request_item_id and self.material_id and self.material_request_item.material_id != self.material_id:
             raise ValidationError("Item do pedido deve usar o mesmo material da requisicao.")
+        if (
+            self.measurement_stock_consumption_id
+            and self.material_id
+            and self.measurement_stock_consumption.material_id
+            and self.measurement_stock_consumption.material_id != self.material_id
+        ):
+            raise ValidationError("Item do pedido deve usar o mesmo material do consumo.")
 
     def save(self, *args, **kwargs):
         if self.material_id:
@@ -748,30 +796,84 @@ class MeasurementMaterial(models.Model):
                 raise ValidationError("O local de retirada deve pertencer a obra da medicao.")
 
     def save(self, *args, **kwargs):
+        sync_stock = kwargs.pop("sync_stock", True)
+        previous = None
+        if self.pk:
+            previous = (
+                MeasurementMaterial.objects.filter(pk=self.pk)
+                .values("material_id", "stock_location_id", "quantity", "status")
+                .first()
+            )
         if self.material_id:
             self.unit_id = self.material.unit_id
         self.full_clean()
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            if sync_stock:
+                from stock.measurement_consumption import sync_measurement_material_consumption
+
+                sync_measurement_material_consumption(self, previous=previous)
+
+    def delete(self, *args, **kwargs):
+        from stock.measurement_consumption import reverse_measurement_material_consumption
+
+        with transaction.atomic():
+            reverse_measurement_material_consumption(self, reason="Item removido da medicao")
+            return super().delete(*args, **kwargs)
 
 
 class MeasurementStockConsumption(models.Model):
     measurement_material = models.ForeignKey(
         "stock.MeasurementMaterial",
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         related_name="consumptions",
+        null=True,
+        blank=True,
     )
     measurement = models.ForeignKey(
         "billing.MeasurementPeriod",
         on_delete=models.CASCADE,
         related_name="stock_consumptions",
     )
+    stock_location = models.ForeignKey(
+        "stock.StockLocation",
+        on_delete=models.PROTECT,
+        related_name="measurement_stock_consumptions",
+        null=True,
+        blank=True,
+    )
+    material = models.ForeignKey(
+        "stock.Material",
+        on_delete=models.PROTECT,
+        related_name="measurement_stock_consumptions",
+        null=True,
+        blank=True,
+    )
+    consumed_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    pending_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    status = models.CharField(
+        max_length=20,
+        choices=MeasurementStockConsumptionStatus.choices,
+        default=MeasurementStockConsumptionStatus.ACTIVE,
+    )
     stock_movement = models.ForeignKey(
         "stock.StockMovement",
         on_delete=models.PROTECT,
         related_name="measurement_consumptions",
+        null=True,
+        blank=True,
+    )
+    reversal_movement = models.ForeignKey(
+        "stock.StockMovement",
+        on_delete=models.PROTECT,
+        related_name="measurement_reversal_consumptions",
+        null=True,
+        blank=True,
     )
     consumption_type = models.CharField(max_length=20, choices=MeasurementStockConsumptionType.choices)
+    note = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at", "-id"]

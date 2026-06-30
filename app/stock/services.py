@@ -57,6 +57,8 @@ def register_stock_movement(
     target_location: StockLocation | None = None,
     note: str = "",
     created_by=None,
+    measurement=None,
+    measurement_material=None,
 ) -> StockMovement:
     quantity = _q_qty(quantity)
     if quantity <= 0:
@@ -99,4 +101,6 @@ def register_stock_movement(
         balance_after=new_quantity,
         note=(note or "").strip(),
         created_by=created_by,
+        measurement=measurement,
+        measurement_material=measurement_material,
     )

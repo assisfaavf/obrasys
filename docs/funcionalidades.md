@@ -16,8 +16,12 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - Unidade do material aplicada automaticamente a partir do cadastro do material.
 - Escolha do local de retirada do material aplicado.
 - Exibicao da quantidade disponivel no local escolhido.
-- Baixa de estoque ao finalizar a medicao.
-- Estorno de estoque ao reabrir, rejeitar, cancelar ou excluir uma medicao com baixa aplicada.
+- Baixa real de estoque ao adicionar material em medicao em rascunho.
+- Ajuste automatico do estoque ao alterar quantidade, material ou local do material aplicado.
+- Estorno de estoque ao excluir material aplicado, reabrir, rejeitar ou cancelar uma medicao com baixa aplicada.
+- Registro de consumo pendente quando a quantidade aplicada supera o saldo disponivel da obra.
+- Alerta por estoque minimo configurado em `Stock balances`.
+- Geracao de pedido/lista de compra por falta real ou recomposicao de estoque minimo.
 - Historico de consumo vinculado a medicao e a movimentacao de estoque.
 
 ## Carga Inicial de Materiais e Estoque
