@@ -5,6 +5,7 @@ from django.core.exceptions import ValidationError
 
 from stock.models import MeasurementMaterial, StockBalance, StockLocation, StockLocationType, StockMovement, StockMovementType
 from stock.services import calculate_balance_after
+from stock.stock_transfer import validate_stock_transfer
 
 
 class StockMovementAdminForm(forms.ModelForm):
@@ -181,3 +182,38 @@ class MeasurementMaterialAdminForm(forms.ModelForm):
             .first()
         )
         return quantity or Decimal("0.000")
+
+
+class QuickStockTransferForm(forms.Form):
+    destination = forms.ModelChoiceField(
+        label="Destino",
+        queryset=StockLocation.objects.none(),
+        required=True,
+    )
+    quantity = forms.DecimalField(
+        label="Quantidade",
+        required=True,
+        max_digits=14,
+        decimal_places=3,
+    )
+    note = forms.CharField(label="Observacao", required=False, widget=forms.Textarea(attrs={"rows": 3}))
+
+    def __init__(self, *args, stock_balance: StockBalance, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stock_balance = stock_balance
+        self.fields["destination"].queryset = StockLocation.objects.filter(is_active=True).exclude(
+            pk=stock_balance.location_id
+        )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        destination = cleaned_data.get("destination")
+        quantity = cleaned_data.get("quantity")
+        if destination and quantity is not None:
+            validate_stock_transfer(
+                material=self.stock_balance.material,
+                origin=self.stock_balance.location,
+                destination=destination,
+                quantity=quantity,
+            )
+        return cleaned_data
