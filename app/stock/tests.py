@@ -57,7 +57,7 @@ from stock.material_request import (
     create_material_request,
 )
 from stock.material_request_processing import process_material_request
-from stock.purchase_import import confirm_stock_import, match_import_items, parse_stock_import_file
+from stock.purchase_import import confirm_stock_import, match_import_items, parse_stock_import_file, prepare_stock_import_items
 from stock.services import register_stock_movement
 from stock.stock_transfer import transfer_stock_between_locations, validate_stock_transfer
 from stock.transfer_import import confirm_stock_transfer_import, parse_stock_transfer_file, prepare_stock_transfer_items
@@ -1448,11 +1448,53 @@ class StockImportTests(TestCase):
         self.assertEqual(item.original_quantity, Decimal("3.000"))
         self.assertEqual(item.status, StockImportItemStatus.OK)
 
+    def test_parse_saves_brand_supplier_and_values(self):
+        import_batch = self._create_import(
+            self._csv_file(
+                "pedido.csv",
+                "descricao,marca,quantidade,valor_unitario,valor_total,fornecedor\n"
+                "Tubo PVC 100mm,Astra,2,12,24,Comercial Maia\n",
+            )
+        )
+        item = import_batch.items.get()
+
+        self.assertEqual(item.original_brand, "Astra")
+        self.assertEqual(item.original_supplier, "Comercial Maia")
+        self.assertEqual(item.unit_price, Decimal("12.0000"))
+        self.assertEqual(item.total_price, Decimal("24.00"))
+
+    def test_blank_prices_do_not_block_import(self):
+        import_batch = self._create_import(
+            self._csv_file("pedido.csv", "descricao,quantidade,valor_unitario,valor_total\nTubo PVC 100mm,2,,\n")
+        )
+        item = import_batch.items.get()
+
+        self.assertEqual(item.status, StockImportItemStatus.OK)
+        self.assertIsNone(item.unit_price)
+        self.assertIsNone(item.total_price)
+
+    def test_match_material_by_codigo_item(self):
+        import_batch = self._create_import(self._csv_file("pedido.csv", "CODIGO_ITEM,QUANTIDADE\nMAT-001,2\n"))
+        item = import_batch.items.get()
+
+        self.assertEqual(item.original_code, "MAT-001")
+        self.assertEqual(item.material, self.material)
+        self.assertEqual(item.status, StockImportItemStatus.OK)
+
     def test_match_material_by_exact_description(self):
         import_batch = self._create_import(self._csv_file("pedido.csv", "descricao,quantidade\nTubo PVC 100mm,2\n"))
         item = import_batch.items.get()
 
         self.assertEqual(item.material, self.material)
+
+    def test_match_material_by_normalized_description(self):
+        accented_material = Material.objects.create(code="MAT-003", name="Te soldavel", unit=self.unit)
+
+        import_batch = self._create_import(self._csv_file("pedido.csv", "descricao,quantidade\nTê Soldável,2\n"))
+        item = import_batch.items.get()
+
+        self.assertEqual(item.material, accented_material)
+        self.assertEqual(item.status, StockImportItemStatus.OK)
 
     def test_match_material_by_alias(self):
         MaterialAlias.objects.create(material=self.alias_material, alias="Adesivo Aquaterm")
@@ -1533,6 +1575,18 @@ class StockImportTests(TestCase):
         with self.assertRaisesMessage(ValidationError, "item pendente"):
             confirm_stock_import(import_batch, user=self.user)
 
+    def test_marks_invalid_quantities_as_pending(self):
+        cases = ["", "0", "-1", "abc"]
+        for index, raw_quantity in enumerate(cases):
+            with self.subTest(raw_quantity=raw_quantity):
+                import_batch = self._create_import(
+                    self._csv_file(f"pedido-{index}.csv", f"descricao,quantidade\nTubo PVC 100mm,{raw_quantity}\n")
+                )
+                item = import_batch.items.get()
+
+                self.assertEqual(item.status, StockImportItemStatus.PENDING_QUANTITY)
+                self.assertIn("Quantidade", item.error_message)
+
     def test_confirmed_quantity_uses_material_unit_not_file_unit_after_manual_adjustment(self):
         import_batch = self._create_import(
             self._csv_file("pedido.csv", "descricao,quantidade,unidade\nTubo PVC 100mm,60,m\n")
@@ -1555,6 +1609,55 @@ class StockImportTests(TestCase):
 
         self.assertFalse(StockMovement.objects.exists())
         self.assertFalse(StockBalance.objects.exists())
+
+    def test_confirm_import_does_not_use_initial_or_transfer_movement_types(self):
+        import_batch = self._create_import(
+            self._csv_file("pedido.csv", "descricao,quantidade,unidade\nTubo PVC 100mm,2,un\n")
+        )
+
+        confirm_stock_import(import_batch, user=self.user)
+
+        movement_types = set(StockMovement.objects.values_list("movement_type", flat=True))
+        self.assertEqual(movement_types, {StockMovementType.PURCHASE_IN})
+        self.assertNotIn(StockMovementType.INITIAL_IN, movement_types)
+        self.assertNotIn(StockMovementType.TRANSFER, movement_types)
+
+    def test_ignored_item_does_not_generate_stock_movement(self):
+        import_batch = self._create_import(
+            self._csv_file("pedido.csv", "descricao,quantidade\nTubo PVC 100mm,2\nRegistro pendente,4\n")
+        )
+        ignored_item = import_batch.items.get(original_description="Registro pendente")
+        ignored_item.status = StockImportItemStatus.IGNORED
+        ignored_item.save(update_fields=["status", "updated_at"])
+        prepare_stock_import_items(import_batch)
+
+        confirmed = confirm_stock_import(import_batch, user=self.user)
+
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(StockMovement.objects.count(), 1)
+        ignored_item.refresh_from_db()
+        self.assertIsNone(ignored_item.stock_movement_id)
+
+    def test_confirmation_is_atomic_when_one_movement_fails(self):
+        second_material = Material.objects.create(code="MAT-004", name="Joelho 90mm", unit=self.unit)
+        import_batch = self._create_import(
+            self._csv_file("pedido.csv", "descricao,quantidade\nTubo PVC 100mm,2\nJoelho 90mm,3\n")
+        )
+        original_register = register_stock_movement
+
+        def fail_on_second_call(*args, **kwargs):
+            if StockMovement.objects.exists():
+                raise ValidationError("Falha simulada.")
+            return original_register(*args, **kwargs)
+
+        with mock.patch("stock.purchase_import.register_stock_movement", side_effect=fail_on_second_call):
+            with self.assertRaisesMessage(ValidationError, "Falha simulada"):
+                confirm_stock_import(import_batch, user=self.user)
+
+        self.assertFalse(StockMovement.objects.exists())
+        self.assertFalse(StockBalance.objects.exists())
+        self.assertEqual(import_batch.items.filter(status=StockImportItemStatus.CONFIRMED).count(), 0)
+        self.assertTrue(second_material.is_active)
 
     def test_match_import_items_after_manual_alias_creation(self):
         import_batch = self._create_import(self._csv_file("pedido.csv", "descricao,quantidade\nAdesivo Aquaterm,5\n"))

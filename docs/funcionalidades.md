@@ -38,12 +38,15 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 
 - Importacao de pedidos de compra por CSV e XLSX pelo Django Admin.
 - Conferencia dos itens antes da confirmacao da entrada em estoque.
-- Associacao automatica de itens importados a materiais por descricao normalizada.
+- Associacao automatica de itens importados a materiais por codigo, descricao normalizada ou alias.
 - Cadastro de aliases para reconhecer descricoes de fornecedores.
 - Marcacao de itens pendentes quando material, unidade ou quantidade precisam de revisao.
+- Registro de marca, fornecedor da linha, valor unitario e valor total quando esses dados vierem na planilha.
+- Contadores de linhas, itens validos, itens com pendencia e movimentacoes criadas no lote importado.
 - Confirmacao da importacao gerando movimentacoes `PURCHASE_IN`.
 - Entrada em estoque central ou estoque de obra, conforme local selecionado.
 - Bloqueio de confirmacao duplicada do mesmo pedido importado.
+- Confirmacao atomica: se uma linha falhar, nenhuma entrada parcial e mantida.
 
 ## Features Avancadas Arquivadas
 

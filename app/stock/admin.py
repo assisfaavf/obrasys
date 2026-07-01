@@ -163,12 +163,17 @@ class StockImportItemInline(admin.TabularInline):
         "original_code",
         "supplier_code",
         "original_description",
+        "original_brand",
+        "original_supplier",
         "original_unit",
         "raw_quantity",
         "original_quantity",
+        "unit_price",
+        "total_price",
         "material",
         "confirmed_quantity",
         "status",
+        "error_message",
         "manual_adjustment",
         "note",
         "stock_movement",
@@ -178,9 +183,14 @@ class StockImportItemInline(admin.TabularInline):
         "original_code",
         "supplier_code",
         "original_description",
+        "original_brand",
+        "original_supplier",
         "original_unit",
         "raw_quantity",
         "original_quantity",
+        "unit_price",
+        "total_price",
+        "error_message",
         "stock_movement",
     )
 
@@ -302,11 +312,34 @@ class InitialStockImportAdmin(admin.ModelAdmin):
 
 @admin.register(StockImport)
 class StockImportAdmin(admin.ModelAdmin):
-    list_display = ("id", "supplier", "destination_location", "project", "status", "received_at", "created_at")
+    list_display = (
+        "id",
+        "supplier",
+        "destination_location",
+        "project",
+        "status",
+        "total_rows",
+        "total_valid_items",
+        "total_error_items",
+        "total_movements_created",
+        "received_at",
+        "created_at",
+    )
     list_filter = ("status", "destination_location__location_type", "project")
     search_fields = ("supplier", "note", "destination_location__name", "project__name")
     ordering = ("-created_at", "-id")
-    readonly_fields = ("status", "created_by", "created_at", "updated_at", "confirmed_at")
+    readonly_fields = (
+        "status",
+        "created_by",
+        "created_at",
+        "updated_at",
+        "processed_at",
+        "confirmed_at",
+        "total_rows",
+        "total_valid_items",
+        "total_error_items",
+        "total_movements_created",
+    )
     inlines = [StockImportItemInline]
     actions = ("parse_selected_imports", "confirm_selected_imports", "cancel_selected_imports")
 
