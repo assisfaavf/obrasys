@@ -75,6 +75,7 @@ class StockImportItemStatus(models.TextChoices):
     PENDING_MATERIAL = "PENDING_MATERIAL", "Pendente de material"
     PENDING_UNIT = "PENDING_UNIT", "Pendente de unidade"
     PENDING_QUANTITY = "PENDING_QUANTITY", "Pendente de quantidade"
+    ERROR = "ERROR", "Erro"
     IGNORED = "IGNORED", "Ignorado"
     CONFIRMED = "CONFIRMED", "Confirmado"
 
@@ -466,7 +467,12 @@ class StockImport(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    total_rows = models.PositiveIntegerField(default=0)
+    total_valid_items = models.PositiveIntegerField(default=0)
+    total_error_items = models.PositiveIntegerField(default=0)
+    total_movements_created = models.PositiveIntegerField(default=0)
 
     class Meta:
         ordering = ["-created_at", "-id"]
@@ -500,6 +506,8 @@ class StockImportItem(models.Model):
     original_code = models.CharField(max_length=80, blank=True)
     supplier_code = models.CharField(max_length=80, blank=True)
     original_description = models.CharField(max_length=255, blank=True)
+    original_brand = models.CharField(max_length=120, blank=True)
+    original_supplier = models.CharField(max_length=255, blank=True)
     original_unit = models.CharField(max_length=40, blank=True)
     raw_quantity = models.CharField(max_length=80, blank=True)
     original_quantity = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
@@ -519,6 +527,7 @@ class StockImportItem(models.Model):
         default=StockImportItemStatus.PENDING_MATERIAL,
     )
     note = models.TextField(blank=True)
+    error_message = models.TextField(blank=True)
     manual_adjustment = models.BooleanField(default=False)
     stock_movement = models.ForeignKey(
         "stock.StockMovement",
@@ -546,10 +555,6 @@ class StockImportItem(models.Model):
                 raise ValidationError("Item confirmado exige material vinculado.")
             if self.confirmed_quantity is None or self.confirmed_quantity <= 0:
                 raise ValidationError("Item confirmado exige quantidade maior que zero.")
-        if self.confirmed_quantity is not None and self.confirmed_quantity <= 0:
-            raise ValidationError("Quantidade confirmada deve ser maior que zero.")
-        if self.original_quantity is not None and self.original_quantity <= 0:
-            raise ValidationError("Quantidade original deve ser maior que zero.")
 
     def save(self, *args, **kwargs):
         self.full_clean()
