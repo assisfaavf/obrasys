@@ -48,6 +48,17 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - Bloqueio de confirmacao duplicada do mesmo pedido importado.
 - Confirmacao atomica: se uma linha falhar, nenhuma entrada parcial e mantida.
 
+## Relatorios Simples de Estoque
+
+- Paginas internas protegidas por usuario staff para consulta de estoque.
+- Relatorio de saldo por local usando `Stock balances` como fonte.
+- Relatorio de saldo por material, com total filtrado por material/local.
+- Matriz simples de saldos com materiais nas linhas e locais nas colunas.
+- Extrato de movimentacoes usando `Stock movements` como fonte.
+- Filtros por local, material, categoria, subcategoria, marca, periodo, usuario e tipo de movimentacao conforme o relatorio.
+- Links para abrir material, local, saldo e movimentacao no Django Admin.
+- Os relatorios sao somente leitura e nao alteram saldos nem criam movimentacoes.
+
 ## Features Avancadas Arquivadas
 
 - Requisicoes de materiais, sugestoes de atendimento e processamento automatico ficam fora da branch MVP.

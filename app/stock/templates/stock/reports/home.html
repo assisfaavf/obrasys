@@ -1,0 +1,27 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Relatorios de estoque{% endblock %}
+
+{% block content %}
+  <h1>Relatorios de estoque</h1>
+
+  <div class="actions">
+    <a href="{% url 'stock:report_by_location' %}">Saldo por local</a>
+    <a href="{% url 'stock:report_by_material' %}">Saldo por material</a>
+    <a href="{% url 'stock:report_matrix' %}">Matriz de saldos</a>
+    <a href="{% url 'stock:report_movements' %}">Extrato de movimentacoes</a>
+  </div>
+
+  <h2>Resumo geral</h2>
+  <table>
+    <tbody>
+      <tr><th>Materiais ativos</th><td>{{ summary.total_materials }}</td></tr>
+      <tr><th>Locais ativos</th><td>{{ summary.total_locations }}</td></tr>
+      <tr><th>Itens com saldo positivo</th><td>{{ summary.positive_balance_items }}</td></tr>
+      <tr><th>Movimentacoes no periodo</th><td>{{ summary.movement_count }}</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Ultimas movimentacoes</h2>
+  {% include "stock/reports/_movements_table.html" with rows=summary.latest_movements %}
+{% endblock %}

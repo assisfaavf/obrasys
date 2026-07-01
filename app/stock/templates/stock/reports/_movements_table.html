@@ -1,0 +1,40 @@
+{% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Data</th>
+        <th>Tipo</th>
+        <th>Material</th>
+        <th>Origem/local</th>
+        <th>Destino</th>
+        <th>Quantidade</th>
+        <th>Saldo apos</th>
+        <th>Usuario</th>
+        <th>Observacao</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td><a href="{{ row.movement_admin_url }}">{{ row.occurred_at|date:"d/m/Y H:i" }}</a></td>
+          <td>{{ row.movement_type }}</td>
+          <td><a href="{{ row.material_admin_url }}">{{ row.material_name }}</a></td>
+          <td><a href="{{ row.location_admin_url }}">{{ row.location.name }}</a></td>
+          <td>
+            {% if row.target_location %}
+              <a href="{{ row.target_location_admin_url }}">{{ row.target_location.name }}</a>
+            {% else %}
+              -
+            {% endif %}
+          </td>
+          <td>{{ row.quantity }} {{ row.unit }}</td>
+          <td>{{ row.balance_after }}</td>
+          <td>{% if row.created_by %}{{ row.created_by }}{% else %}-{% endif %}</td>
+          <td>{{ row.note|default:"-" }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="muted">Nenhuma movimentacao encontrada.</p>
+{% endif %}
