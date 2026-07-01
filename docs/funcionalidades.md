@@ -14,6 +14,7 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - Identificacao de materiais por codigo, descricao normalizada ou alias.
 - Validacao de saldo na origem antes e durante a confirmacao.
 - Confirmacao atomica da transferencia, usando movimentacao `TRANSFER`.
+- Transferencia rapida de um unico material a partir da tela de saldos.
 
 ## Estoque em Medicoes
 

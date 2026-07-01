@@ -1,0 +1,29 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<div id="content-main">
+  <p><strong>Material:</strong> {{ balance.material }}</p>
+  <p><strong>Origem:</strong> {{ balance.location }}</p>
+  <p><strong>Unidade:</strong> {{ balance.material.unit }}</p>
+  <p><strong>Saldo disponivel:</strong> {{ balance.quantity }}</p>
+
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+    <fieldset class="module aligned">
+      {% for field in form %}
+        <div class="form-row">
+          {{ field.errors }}
+          {{ field.label_tag }}
+          {{ field }}
+          {% if field.help_text %}<div class="help">{{ field.help_text }}</div>{% endif %}
+        </div>
+      {% endfor %}
+    </fieldset>
+    <div class="submit-row">
+      <input type="submit" value="Confirmar transferencia" class="default">
+      <a href="{% url 'admin:stock_stockbalance_changelist' %}" class="button cancel-link">Cancelar</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

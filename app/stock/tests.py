@@ -59,6 +59,7 @@ from stock.material_request import (
 from stock.material_request_processing import process_material_request
 from stock.purchase_import import confirm_stock_import, match_import_items, parse_stock_import_file, prepare_stock_import_items
 from stock.services import register_stock_movement
+from stock.stock_transfer import transfer_stock_between_locations, validate_stock_transfer
 from stock.transfer_import import confirm_stock_transfer_import, parse_stock_transfer_file, prepare_stock_transfer_items
 
 
@@ -342,6 +343,190 @@ class StockCoreTests(TestCase):
             StockBalance.objects.get(material=material, location=destination).quantity,
             Decimal("4.000"),
         )
+
+    def test_quick_transfer_with_sufficient_balance(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+        register_stock_movement(material=material, location=origin, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+
+        movement = transfer_stock_between_locations(
+            material=material,
+            origin=origin,
+            destination=destination,
+            quantity=Decimal("4"),
+            user=self.user,
+            note="envio rapido",
+        )
+
+        self.assertEqual(movement.movement_type, StockMovementType.TRANSFER)
+        self.assertEqual(movement.created_by, self.user)
+        self.assertIn("envio rapido", movement.note)
+        self.assertEqual(StockBalance.objects.get(material=material, location=origin).quantity, Decimal("6.000"))
+        self.assertEqual(StockBalance.objects.get(material=material, location=destination).quantity, Decimal("4.000"))
+
+    def test_quick_transfer_creates_destination_balance_when_missing(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+        register_stock_movement(material=material, location=origin, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+
+        transfer_stock_between_locations(material=material, origin=origin, destination=destination, quantity=Decimal("4"))
+
+        self.assertEqual(StockBalance.objects.get(material=material, location=destination).quantity, Decimal("4.000"))
+
+    def test_quick_transfer_blocks_same_origin_and_destination(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+
+        with self.assertRaisesMessage(ValidationError, "Origem e destino nao podem ser o mesmo local"):
+            validate_stock_transfer(material=material, origin=origin, destination=origin, quantity=Decimal("1"))
+
+    def test_quick_transfer_blocks_empty_quantity(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+
+        with self.assertRaisesMessage(ValidationError, "Quantidade deve ser maior que zero"):
+            validate_stock_transfer(material=material, origin=origin, destination=destination, quantity="")
+
+    def test_quick_transfer_blocks_zero_quantity(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+
+        with self.assertRaisesMessage(ValidationError, "Quantidade deve ser maior que zero"):
+            validate_stock_transfer(material=material, origin=origin, destination=destination, quantity=Decimal("0"))
+
+    def test_quick_transfer_blocks_negative_quantity(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+
+        with self.assertRaisesMessage(ValidationError, "Quantidade deve ser maior que zero"):
+            validate_stock_transfer(material=material, origin=origin, destination=destination, quantity=Decimal("-1"))
+
+    def test_quick_transfer_blocks_quantity_greater_than_origin_balance(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+        register_stock_movement(material=material, location=origin, movement_type=StockMovementType.IN, quantity=Decimal("2"))
+
+        with self.assertRaisesMessage(ValidationError, "Saldo insuficiente"):
+            transfer_stock_between_locations(material=material, origin=origin, destination=destination, quantity=Decimal("3"))
+
+    def test_quick_transfer_unit_comes_from_material(self):
+        material = self._create_material()
+
+        self.assertEqual(material.unit, material.unit)
+
+    def test_quick_transfer_blocks_fractional_quantity_for_indivisible_unit(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+        register_stock_movement(material=material, location=origin, movement_type=StockMovementType.IN, quantity=Decimal("2"))
+
+        with self.assertRaisesMessage(ValidationError, "Unidade indivisivel"):
+            transfer_stock_between_locations(material=material, origin=origin, destination=destination, quantity=Decimal("1.5"))
+
+    def test_quick_transfer_is_atomic_when_movement_fails(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+        register_stock_movement(material=material, location=origin, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+
+        with mock.patch("stock.stock_transfer.register_stock_movement", side_effect=ValidationError("falha simulada")):
+            with self.assertRaisesMessage(ValidationError, "falha simulada"):
+                transfer_stock_between_locations(
+                    material=material,
+                    origin=origin,
+                    destination=destination,
+                    quantity=Decimal("4"),
+                )
+
+        self.assertEqual(StockBalance.objects.get(material=material, location=origin).quantity, Decimal("10.000"))
+        self.assertFalse(StockBalance.objects.filter(material=material, location=destination).exists())
+
+    def test_quick_transfer_revalidates_balance_at_confirmation(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+        register_stock_movement(material=material, location=origin, movement_type=StockMovementType.IN, quantity=Decimal("2"))
+
+        with self.assertRaisesMessage(ValidationError, "Saldo insuficiente"):
+            transfer_stock_between_locations(material=material, origin=origin, destination=destination, quantity=Decimal("3"))
+
+    def test_quick_transfer_does_not_use_initial_or_purchase_movements(self):
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+        register_stock_movement(material=material, location=origin, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+
+        transfer_stock_between_locations(material=material, origin=origin, destination=destination, quantity=Decimal("4"))
+
+        self.assertFalse(StockMovement.objects.filter(movement_type=StockMovementType.INITIAL_IN).exists())
+        self.assertFalse(StockMovement.objects.filter(movement_type=StockMovementType.PURCHASE_IN).exists())
+
+    def test_quick_transfer_admin_action_opens_form(self):
+        self.client.force_login(self.user)
+        material = self._create_material()
+        origin = self._create_central_location()
+        register_stock_movement(material=material, location=origin, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+        balance = StockBalance.objects.get(material=material, location=origin)
+
+        response = self.client.post(
+            reverse("admin:stock_stockbalance_changelist"),
+            {
+                "action": "quick_transfer_selected_balance",
+                "_selected_action": [str(balance.pk)],
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/{balance.pk}/quick-transfer/", response["Location"])
+
+    def test_quick_transfer_admin_form_renders_template(self):
+        self.client.force_login(self.user)
+        material = self._create_material()
+        origin = self._create_central_location()
+        register_stock_movement(material=material, location=origin, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+        balance = StockBalance.objects.get(material=material, location=origin)
+
+        response = self.client.get(reverse("admin:stock_stockbalance_quick_transfer", args=[balance.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Transferir saldo selecionado")
+        self.assertContains(response, "Confirmar transferencia")
+
+    def test_quick_transfer_admin_view_calls_service(self):
+        self.client.force_login(self.user)
+        material = self._create_material()
+        origin = self._create_central_location()
+        destination = self._create_project_location()
+        register_stock_movement(material=material, location=origin, movement_type=StockMovementType.IN, quantity=Decimal("10"))
+        balance = StockBalance.objects.get(material=material, location=origin)
+
+        with mock.patch("stock.admin.transfer_stock_between_locations") as mocked_transfer:
+            mocked_transfer.return_value = StockMovement.objects.create(
+                material=material,
+                location=origin,
+                target_location=destination,
+                movement_type=StockMovementType.TRANSFER,
+                quantity=Decimal("1"),
+                balance_after=Decimal("9"),
+                created_by=self.user,
+            )
+            response = self.client.post(
+                reverse("admin:stock_stockbalance_quick_transfer", args=[balance.pk]),
+                {
+                    "destination": str(destination.pk),
+                    "quantity": "1",
+                    "note": "teste admin",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        mocked_transfer.assert_called_once()
 
     def test_mvp_admin_hides_advanced_stock_features(self):
         hidden_admin_routes = (

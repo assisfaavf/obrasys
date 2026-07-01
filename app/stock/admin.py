@@ -2,9 +2,11 @@ from django.contrib import admin
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import JsonResponse
-from django.urls import path
+from django.shortcuts import redirect
+from django.template.response import TemplateResponse
+from django.urls import path, reverse
 
-from stock.forms import StockMovementAdminForm
+from stock.forms import QuickStockTransferForm, StockMovementAdminForm
 from stock.initial_import import cancel_initial_stock_import, confirm_initial_stock_import, parse_initial_stock_file
 from stock.models import (
     InitialStockImport,
@@ -21,6 +23,7 @@ from stock.models import (
 )
 from stock.purchase_import import cancel_stock_import, confirm_stock_import, parse_stock_import_file
 from stock.services import calculate_balance_after, register_stock_movement
+from stock.stock_transfer import transfer_stock_between_locations
 from stock.transfer_import import (
     cancel_stock_transfer_import,
     confirm_stock_transfer_import,
@@ -61,6 +64,59 @@ class StockBalanceAdmin(admin.ModelAdmin):
     search_fields = ("material__code", "material__name", "location__code", "location__name")
     ordering = ("location", "material")
     readonly_fields = ("updated_at",)
+    actions = ("quick_transfer_selected_balance",)
+
+    def get_urls(self):
+        custom_urls = [
+            path(
+                "<int:balance_id>/quick-transfer/",
+                self.admin_site.admin_view(self.quick_transfer_view),
+                name="stock_stockbalance_quick_transfer",
+            ),
+        ]
+        return custom_urls + super().get_urls()
+
+    @admin.action(description="Transferir saldo selecionado")
+    def quick_transfer_selected_balance(self, request, queryset):
+        if queryset.count() != 1:
+            self.message_user(request, "Selecione exatamente um saldo para transferir.", messages.ERROR)
+            return None
+        balance = queryset.select_related("material__unit", "location").get()
+        return redirect("admin:stock_stockbalance_quick_transfer", balance_id=balance.pk)
+
+    def quick_transfer_view(self, request, balance_id):
+        balance = StockBalance.objects.select_related("material__unit", "location").get(pk=balance_id)
+        if request.method == "POST":
+            form = QuickStockTransferForm(request.POST, stock_balance=balance)
+            if form.is_valid():
+                try:
+                    movement = transfer_stock_between_locations(
+                        material=balance.material,
+                        origin=balance.location,
+                        destination=form.cleaned_data["destination"],
+                        quantity=form.cleaned_data["quantity"],
+                        note=form.cleaned_data.get("note", ""),
+                        user=request.user,
+                    )
+                    self.message_user(
+                        request,
+                        f"Transferencia {movement.id} criada para {balance.material}.",
+                        messages.SUCCESS,
+                    )
+                    return redirect(reverse("admin:stock_stockbalance_changelist"))
+                except ValidationError as exc:
+                    form.add_error(None, exc)
+        else:
+            form = QuickStockTransferForm(stock_balance=balance)
+
+        context = {
+            **self.admin_site.each_context(request),
+            "opts": self.model._meta,
+            "title": "Transferir saldo selecionado",
+            "form": form,
+            "balance": balance,
+        }
+        return TemplateResponse(request, "admin/stock/stockbalance/quick_transfer.html", context)
 
 
 class InitialStockImportItemInline(admin.TabularInline):
