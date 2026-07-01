@@ -9,6 +9,11 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - Controle de saldo por material e local.
 - Movimentacoes de entrada, saida, ajustes e transferencia entre locais.
 - No admin de movimentacoes, o sistema mostra a quantidade disponivel no local e a quantidade apos a movimentacao.
+- Importacao de transferencias por planilha CSV/XLSX entre locais de estoque.
+- Conferencia dos itens antes de confirmar a transferencia importada.
+- Identificacao de materiais por codigo, descricao normalizada ou alias.
+- Validacao de saldo na origem antes e durante a confirmacao.
+- Confirmacao atomica da transferencia, usando movimentacao `TRANSFER`.
 
 ## Estoque em Medicoes
 

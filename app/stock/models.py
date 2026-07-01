@@ -79,6 +79,25 @@ class StockImportItemStatus(models.TextChoices):
     CONFIRMED = "CONFIRMED", "Confirmado"
 
 
+class StockTransferImportStatus(models.TextChoices):
+    DRAFT = "DRAFT", "Rascunho"
+    PENDING_REVIEW = "PENDING_REVIEW", "Pendente de conferencia"
+    CONFIRMED = "CONFIRMED", "Confirmado"
+    CANCELLED = "CANCELLED", "Cancelado"
+    ERROR = "ERROR", "Com erros"
+
+
+class StockTransferImportItemStatus(models.TextChoices):
+    PENDING = "PENDING", "Pendente"
+    OK = "OK", "OK"
+    PENDING_MATERIAL = "PENDING_MATERIAL", "Pendente de material"
+    PENDING_QUANTITY = "PENDING_QUANTITY", "Pendente de quantidade"
+    INSUFFICIENT_STOCK = "INSUFFICIENT_STOCK", "Saldo insuficiente"
+    IGNORED = "IGNORED", "Ignorado"
+    CONFIRMED = "CONFIRMED", "Confirmado"
+    ERROR = "ERROR", "Erro"
+
+
 class MaterialRequestStatus(models.TextChoices):
     DRAFT = "DRAFT", "Rascunho"
     IN_REVIEW = "IN_REVIEW", "Em analise"
@@ -531,6 +550,129 @@ class StockImportItem(models.Model):
             raise ValidationError("Quantidade confirmada deve ser maior que zero.")
         if self.original_quantity is not None and self.original_quantity <= 0:
             raise ValidationError("Quantidade original deve ser maior que zero.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class StockTransferImport(models.Model):
+    original_file = models.FileField(upload_to="stock/transfer-imports/")
+    origin_location = models.ForeignKey(
+        "stock.StockLocation",
+        on_delete=models.PROTECT,
+        related_name="outgoing_transfer_imports",
+    )
+    destination_location = models.ForeignKey(
+        "stock.StockLocation",
+        on_delete=models.PROTECT,
+        related_name="incoming_transfer_imports",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=StockTransferImportStatus.choices,
+        default=StockTransferImportStatus.DRAFT,
+    )
+    note = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stock_transfer_imports",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    total_rows = models.PositiveIntegerField(default=0)
+    total_valid_items = models.PositiveIntegerField(default=0)
+    total_error_items = models.PositiveIntegerField(default=0)
+    total_transferred_items = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Transferencia importada #{self.pk or 'nova'}"
+
+    def clean(self):
+        super().clean()
+        if not self.origin_location_id:
+            raise ValidationError("Local de origem obrigatorio.")
+        if not self.destination_location_id:
+            raise ValidationError("Local de destino obrigatorio.")
+        if self.origin_location_id and self.destination_location_id and self.origin_location_id == self.destination_location_id:
+            raise ValidationError("Origem e destino devem ser diferentes.")
+        if self.origin_location_id and not self.origin_location.is_active:
+            raise ValidationError("Local de origem deve estar ativo.")
+        if self.destination_location_id and not self.destination_location.is_active:
+            raise ValidationError("Local de destino deve estar ativo.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class StockTransferImportItem(models.Model):
+    transfer_import = models.ForeignKey(
+        "stock.StockTransferImport",
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    row_number = models.PositiveIntegerField()
+    original_code = models.CharField(max_length=80, blank=True)
+    original_description = models.CharField(max_length=255, blank=True)
+    original_brand = models.CharField(max_length=120, blank=True)
+    original_unit = models.CharField(max_length=40, blank=True)
+    raw_quantity = models.CharField(max_length=80, blank=True)
+    original_quantity = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
+    confirmed_quantity = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
+    available_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    material = models.ForeignKey(
+        "stock.Material",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="transfer_import_items",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=StockTransferImportItemStatus.choices,
+        default=StockTransferImportItemStatus.PENDING,
+    )
+    error_message = models.TextField(blank=True)
+    note = models.TextField(blank=True)
+    transfer_movement = models.ForeignKey(
+        "stock.StockMovement",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="transfer_import_items",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["transfer_import_id", "row_number", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["transfer_import", "row_number"], name="uniq_stock_transfer_import_row"),
+        ]
+
+    @property
+    def unit(self):
+        return self.material.unit if self.material_id else None
+
+    def __str__(self) -> str:
+        return f"{self.transfer_import_id} - linha {self.row_number}: {self.original_description}"
+
+    def clean(self):
+        super().clean()
+        if self.status in {StockTransferImportItemStatus.OK, StockTransferImportItemStatus.CONFIRMED}:
+            if not self.material_id:
+                raise ValidationError("Item confirmado exige material vinculado.")
+            if self.confirmed_quantity is None or self.confirmed_quantity <= 0:
+                raise ValidationError("Quantidade confirmada deve ser maior que zero.")
 
     def save(self, *args, **kwargs):
         self.full_clean()

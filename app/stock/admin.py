@@ -16,9 +16,17 @@ from stock.models import (
     StockImportItem,
     StockLocation,
     StockMovement,
+    StockTransferImport,
+    StockTransferImportItem,
 )
 from stock.purchase_import import cancel_stock_import, confirm_stock_import, parse_stock_import_file
 from stock.services import calculate_balance_after, register_stock_movement
+from stock.transfer_import import (
+    cancel_stock_transfer_import,
+    confirm_stock_transfer_import,
+    parse_stock_transfer_file,
+    prepare_stock_transfer_items,
+)
 
 
 @admin.register(Material)
@@ -119,6 +127,45 @@ class StockImportItemInline(admin.TabularInline):
         "original_quantity",
         "stock_movement",
     )
+
+
+class StockTransferImportItemInline(admin.TabularInline):
+    model = StockTransferImportItem
+    extra = 0
+    fields = (
+        "row_number",
+        "original_code",
+        "original_description",
+        "original_brand",
+        "original_unit",
+        "raw_quantity",
+        "confirmed_quantity",
+        "material",
+        "unit_display",
+        "available_quantity",
+        "status",
+        "error_message",
+        "note",
+        "transfer_movement",
+    )
+    readonly_fields = (
+        "row_number",
+        "original_code",
+        "original_description",
+        "original_brand",
+        "original_unit",
+        "raw_quantity",
+        "unit_display",
+        "available_quantity",
+        "error_message",
+        "transfer_movement",
+    )
+
+    @admin.display(description="Unidade")
+    def unit_display(self, obj):
+        if obj and obj.material_id:
+            return obj.material.unit.code
+        return "-"
 
 
 @admin.register(InitialStockImport)
@@ -252,6 +299,100 @@ class StockImportAdmin(admin.ModelAdmin):
                 self.message_user(request, f"Importacao {import_batch.id}: cancelada.", messages.SUCCESS)
             except ValidationError as exc:
                 self.message_user(request, f"Importacao {import_batch.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+
+@admin.register(StockTransferImport)
+class StockTransferImportAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "origin_location",
+        "destination_location",
+        "status",
+        "total_rows",
+        "total_valid_items",
+        "total_error_items",
+        "total_transferred_items",
+        "created_at",
+    )
+    list_filter = ("status", "origin_location", "destination_location")
+    search_fields = ("note", "origin_location__name", "destination_location__name")
+    ordering = ("-created_at", "-id")
+    readonly_fields = (
+        "status",
+        "created_by",
+        "created_at",
+        "processed_at",
+        "confirmed_at",
+        "updated_at",
+        "total_rows",
+        "total_valid_items",
+        "total_error_items",
+        "total_transferred_items",
+    )
+    inlines = [StockTransferImportItemInline]
+    actions = (
+        "parse_selected_transfers",
+        "revalidate_selected_transfers",
+        "confirm_selected_transfers",
+        "cancel_selected_transfers",
+    )
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        if obj and obj.status == "CONFIRMED":
+            fields.extend(["original_file", "origin_location", "destination_location", "note"])
+        return tuple(dict.fromkeys(fields))
+
+    def save_model(self, request, obj, form, change):
+        if not change and request.user.is_authenticated:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+        if not change:
+            try:
+                created = parse_stock_transfer_file(obj)
+                self.message_user(request, f"Arquivo lido: {len(created)} itens para conferencia.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, "; ".join(exc.messages), messages.ERROR)
+
+    @admin.action(description="Processar/reprocessar planilha de transferencia")
+    def parse_selected_transfers(self, request, queryset):
+        for transfer_import in queryset:
+            try:
+                created = parse_stock_transfer_file(transfer_import)
+                self.message_user(request, f"Transferencia {transfer_import.id}: {len(created)} itens lidos.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, f"Transferencia {transfer_import.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+    @admin.action(description="Revalidar itens da transferencia")
+    def revalidate_selected_transfers(self, request, queryset):
+        for transfer_import in queryset:
+            try:
+                items = prepare_stock_transfer_items(transfer_import)
+                self.message_user(request, f"Transferencia {transfer_import.id}: {len(items)} itens revalidados.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, f"Transferencia {transfer_import.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+    @admin.action(description="Confirmar transferencia importada")
+    def confirm_selected_transfers(self, request, queryset):
+        for transfer_import in queryset:
+            try:
+                confirmed = confirm_stock_transfer_import(transfer_import, user=request.user)
+                self.message_user(
+                    request,
+                    f"Transferencia {transfer_import.id}: {len(confirmed)} itens transferidos.",
+                    messages.SUCCESS,
+                )
+            except ValidationError as exc:
+                self.message_user(request, f"Transferencia {transfer_import.id}: {'; '.join(exc.messages)}", messages.ERROR)
+
+    @admin.action(description="Cancelar transferencia antes da confirmacao")
+    def cancel_selected_transfers(self, request, queryset):
+        for transfer_import in queryset:
+            try:
+                cancel_stock_transfer_import(transfer_import)
+                self.message_user(request, f"Transferencia {transfer_import.id}: cancelada.", messages.SUCCESS)
+            except ValidationError as exc:
+                self.message_user(request, f"Transferencia {transfer_import.id}: {'; '.join(exc.messages)}", messages.ERROR)
 
 
 @admin.register(StockMovement)
