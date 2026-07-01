@@ -45,6 +45,8 @@ from stock.models import (
     StockLocationType,
     StockMovement,
     StockMovementType,
+    StockTransferImport,
+    StockTransferImportItemStatus,
 )
 from stock.initial_import import confirm_initial_stock_import, parse_initial_stock_file
 from stock.material_request import (
@@ -57,6 +59,7 @@ from stock.material_request import (
 from stock.material_request_processing import process_material_request
 from stock.purchase_import import confirm_stock_import, match_import_items, parse_stock_import_file
 from stock.services import register_stock_movement
+from stock.transfer_import import confirm_stock_transfer_import, parse_stock_transfer_file, prepare_stock_transfer_items
 
 
 class StockCoreTests(TestCase):
@@ -1389,6 +1392,239 @@ class StockImportTests(TestCase):
         )
         parse_stock_import_file(import_batch)
         return import_batch
+
+    def _csv_file(self, name, content):
+        return SimpleUploadedFile(name, content.encode("utf-8"), content_type="text/csv")
+
+    def _xlsx_file(self, name, rows):
+        workbook = Workbook()
+        sheet = workbook.active
+        for row in rows:
+            sheet.append(row)
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        return SimpleUploadedFile(
+            name,
+            output.read(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+class StockTransferImportTests(TestCase):
+    def setUp(self):
+        self.unit = Unit.objects.create(code="UN", name="Unidade")
+        self.meter_unit = Unit.objects.create(code="M", name="Metro")
+        self.client_obj = Client.objects.create(name="Cliente Transferencia")
+        self.project = Project.objects.create(name="Obra Transferencia", client=self.client_obj)
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(username="transfer-user", password="secret123")
+        self.origin = StockLocation.objects.create(
+            code="CENTRAL-TR",
+            name="Estoque central transferencia",
+            location_type=StockLocationType.CENTRAL,
+        )
+        self.destination = StockLocation.objects.create(
+            code="OBRA-TR",
+            name="Almoxarifado transferencia",
+            location_type=StockLocationType.PROJECT,
+            project=self.project,
+        )
+        self.material = Material.objects.create(code="TR-001", name="Tubo PVC 100mm", unit=self.unit)
+        self.other_material = Material.objects.create(code="TR-002", name="Cabo Flexivel 2,5mm", unit=self.meter_unit)
+
+    def test_import_valid_xlsx_transfer_file(self):
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        transfer_import = self._create_transfer_import(
+            self._xlsx_file("transferencia.xlsx", [["CODIGO_ITEM", "DESCRICAO", "QUANTIDADE"], ["TR-001", "Tubo", 10]])
+        )
+
+        items = parse_stock_transfer_file(transfer_import)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].status, StockTransferImportItemStatus.OK)
+        self.assertEqual(items[0].confirmed_quantity, Decimal("10.000"))
+
+    def test_import_valid_csv_transfer_file(self):
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        transfer_import = self._create_transfer_import(
+            self._csv_file("transferencia.csv", "CODIGO_ITEM,DESCRICAO,QUANTIDADE\nTR-001,Tubo PVC,10\n")
+        )
+
+        items = parse_stock_transfer_file(transfer_import)
+
+        self.assertEqual(items[0].material, self.material)
+        self.assertEqual(items[0].status, StockTransferImportItemStatus.OK)
+
+    def test_identifies_material_by_code(self):
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        item = self._parsed_item("CODIGO_ITEM,QUANTIDADE\nTR-001,2\n")
+
+        self.assertEqual(item.material, self.material)
+
+    def test_identifies_material_by_normalized_description(self):
+        self._set_balance(self.other_material, self.origin, Decimal("20"))
+        item = self._parsed_item("DESCRICAO,QUANTIDADE\ncabo flexivel 2 5mm,2\n")
+
+        self.assertEqual(item.material, self.other_material)
+
+    def test_identifies_material_by_alias(self):
+        MaterialAlias.objects.create(material=self.material, alias="Tubo soldavel cem milimetros")
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        item = self._parsed_item("DESCRICAO,QUANTIDADE\nTubo soldavel cem milimetros,2\n")
+
+        self.assertEqual(item.material, self.material)
+
+    def test_marks_pending_material_when_not_found(self):
+        item = self._parsed_item("DESCRICAO,QUANTIDADE\nMaterial inexistente,2\n")
+
+        self.assertEqual(item.status, StockTransferImportItemStatus.PENDING_MATERIAL)
+
+    def test_blocks_empty_quantity(self):
+        item = self._parsed_item("CODIGO_ITEM,QUANTIDADE\nTR-001,\n")
+
+        self.assertEqual(item.status, StockTransferImportItemStatus.PENDING_QUANTITY)
+
+    def test_blocks_zero_quantity(self):
+        item = self._parsed_item("CODIGO_ITEM,QUANTIDADE\nTR-001,0\n")
+
+        self.assertEqual(item.status, StockTransferImportItemStatus.PENDING_QUANTITY)
+
+    def test_blocks_negative_quantity(self):
+        item = self._parsed_item("CODIGO_ITEM,QUANTIDADE\nTR-001,-1\n")
+
+        self.assertEqual(item.status, StockTransferImportItemStatus.PENDING_QUANTITY)
+
+    def test_blocks_text_quantity(self):
+        item = self._parsed_item("CODIGO_ITEM,QUANTIDADE\nTR-001,dez\n")
+
+        self.assertEqual(item.status, StockTransferImportItemStatus.PENDING_QUANTITY)
+
+    def test_marks_insufficient_stock(self):
+        self._set_balance(self.material, self.origin, Decimal("2"))
+        item = self._parsed_item("CODIGO_ITEM,QUANTIDADE\nTR-001,10\n")
+
+        self.assertEqual(item.status, StockTransferImportItemStatus.INSUFFICIENT_STOCK)
+        self.assertIn("Saldo insuficiente", item.error_message)
+
+    def test_blocks_same_origin_and_destination(self):
+        with self.assertRaisesMessage(ValidationError, "Origem e destino devem ser diferentes"):
+            StockTransferImport.objects.create(
+                original_file=self._csv_file("transferencia.csv", "CODIGO_ITEM,QUANTIDADE\nTR-001,1\n"),
+                origin_location=self.origin,
+                destination_location=self.origin,
+            )
+
+    def test_confirm_valid_transfer_updates_balances_and_creates_transfer_movement(self):
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        transfer_import = self._create_transfer_import(
+            self._csv_file("transferencia.csv", "CODIGO_ITEM,QUANTIDADE\nTR-001,10\n")
+        )
+        parse_stock_transfer_file(transfer_import)
+
+        confirmed = confirm_stock_transfer_import(transfer_import, user=self.user)
+
+        self.assertEqual(len(confirmed), 1)
+        movement = StockMovement.objects.get()
+        self.assertEqual(movement.movement_type, StockMovementType.TRANSFER)
+        self.assertEqual(movement.location, self.origin)
+        self.assertEqual(movement.target_location, self.destination)
+        self.assertEqual(movement.quantity, Decimal("10.000"))
+        self.assertEqual(StockBalance.objects.get(material=self.material, location=self.origin).quantity, Decimal("10.000"))
+        self.assertEqual(StockBalance.objects.get(material=self.material, location=self.destination).quantity, Decimal("10.000"))
+
+    def test_transfer_import_does_not_use_purchase_or_initial_movement_types(self):
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        transfer_import = self._create_transfer_import(
+            self._csv_file("transferencia.csv", "CODIGO_ITEM,QUANTIDADE\nTR-001,10\n")
+        )
+        parse_stock_transfer_file(transfer_import)
+
+        confirm_stock_transfer_import(transfer_import, user=self.user)
+
+        self.assertFalse(StockMovement.objects.filter(movement_type=StockMovementType.PURCHASE_IN).exists())
+        self.assertFalse(StockMovement.objects.filter(movement_type=StockMovementType.INITIAL_IN).exists())
+
+    def test_blocks_duplicate_confirmation(self):
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        transfer_import = self._create_transfer_import(
+            self._csv_file("transferencia.csv", "CODIGO_ITEM,QUANTIDADE\nTR-001,10\n")
+        )
+        parse_stock_transfer_file(transfer_import)
+        confirm_stock_transfer_import(transfer_import, user=self.user)
+
+        with self.assertRaisesMessage(ValidationError, "ja confirmada"):
+            confirm_stock_transfer_import(transfer_import, user=self.user)
+
+    def test_ignored_item_does_not_move_stock(self):
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        transfer_import = self._create_transfer_import(
+            self._csv_file("transferencia.csv", "CODIGO_ITEM,QUANTIDADE\nTR-001,10\nTR-XXX,5\n")
+        )
+        parse_stock_transfer_file(transfer_import)
+        ignored = transfer_import.items.get(row_number=3)
+        ignored.status = StockTransferImportItemStatus.IGNORED
+        ignored.save(update_fields=["status", "updated_at"])
+
+        confirm_stock_transfer_import(transfer_import, user=self.user)
+
+        self.assertEqual(StockMovement.objects.count(), 1)
+        self.assertEqual(StockBalance.objects.get(material=self.material, location=self.origin).quantity, Decimal("10.000"))
+
+    def test_confirmation_is_atomic_when_one_item_fails(self):
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        transfer_import = self._create_transfer_import(
+            self._csv_file("transferencia.csv", "CODIGO_ITEM,QUANTIDADE\nTR-001,10\n")
+        )
+        parse_stock_transfer_file(transfer_import)
+
+        with mock.patch("stock.transfer_import.register_stock_movement", side_effect=ValidationError("falha simulada")):
+            with self.assertRaisesMessage(ValidationError, "falha simulada"):
+                confirm_stock_transfer_import(transfer_import, user=self.user)
+
+        self.assertEqual(StockBalance.objects.get(material=self.material, location=self.origin).quantity, Decimal("20.000"))
+        self.assertFalse(StockMovement.objects.exists())
+        self.assertFalse(transfer_import.items.get().transfer_movement_id)
+
+    def test_balance_is_revalidated_at_confirmation(self):
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        transfer_import = self._create_transfer_import(
+            self._csv_file("transferencia.csv", "CODIGO_ITEM,QUANTIDADE\nTR-001,10\n")
+        )
+        parse_stock_transfer_file(transfer_import)
+        self._set_balance(self.material, self.origin, Decimal("5"))
+
+        with self.assertRaisesMessage(ValidationError, "Saldo insuficiente"):
+            confirm_stock_transfer_import(transfer_import, user=self.user)
+
+        self.assertFalse(StockMovement.objects.exists())
+        self.assertEqual(StockBalance.objects.get(material=self.material, location=self.origin).quantity, Decimal("5.000"))
+
+    def test_unit_comes_from_material(self):
+        self._set_balance(self.material, self.origin, Decimal("20"))
+        item = self._parsed_item("CODIGO_ITEM,UNIDADE,QUANTIDADE\nTR-001,CX,2\n")
+
+        self.assertEqual(item.unit, self.material.unit)
+
+    def _parsed_item(self, csv_content):
+        transfer_import = self._create_transfer_import(self._csv_file("transferencia.csv", csv_content))
+        parse_stock_transfer_file(transfer_import)
+        return transfer_import.items.get()
+
+    def _create_transfer_import(self, uploaded_file):
+        return StockTransferImport.objects.create(
+            original_file=uploaded_file,
+            origin_location=self.origin,
+            destination_location=self.destination,
+            created_by=self.user,
+        )
+
+    def _set_balance(self, material, location, quantity):
+        StockBalance.objects.update_or_create(
+            material=material,
+            location=location,
+            defaults={"quantity": Decimal(quantity).quantize(Decimal("0.001"))},
+        )
 
     def _csv_file(self, name, content):
         return SimpleUploadedFile(name, content.encode("utf-8"), content_type="text/csv")
