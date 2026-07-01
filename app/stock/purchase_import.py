@@ -21,6 +21,8 @@ from stock.models import (
 )
 from stock.services import register_stock_movement
 
+QTY_Q = Decimal("0.001")
+
 
 COLUMN_ALIASES = {
     "code": {"codigo", "cod", "codigo interno", "cod interno", "sku", "material"},
@@ -34,6 +36,16 @@ COLUMN_ALIASES = {
     "note": {"observacao", "observação", "obs", "nota"},
 }
 
+COLUMN_ALIASES.update(
+    {
+        "code": COLUMN_ALIASES["code"] | {"codigo item", "cod item", "item", "material codigo"},
+        "description": COLUMN_ALIASES["description"] | {"produto", "material", "item descricao"},
+        "brand": {"marca", "fabricante", "fab"},
+        "unit_price": COLUMN_ALIASES["unit_price"] | {"valor unit", "valor_unitario"},
+        "total_price": COLUMN_ALIASES["total_price"] | {"valor_total"},
+    }
+)
+
 
 def normalize_description(value: str) -> str:
     value = unicodedata.normalize("NFKD", str(value or ""))
@@ -45,6 +57,8 @@ def normalize_description(value: str) -> str:
 def parse_stock_import_file(import_batch: StockImport) -> list[StockImportItem]:
     if import_batch.status == StockImportStatus.CONFIRMED:
         raise ValidationError("Importacao confirmada nao pode ser relida.")
+    if import_batch.status == StockImportStatus.CANCELLED:
+        raise ValidationError("Importacao cancelada nao pode ser relida.")
     if not import_batch.original_file:
         raise ValidationError("Arquivo de importacao obrigatorio.")
 
@@ -56,24 +70,60 @@ def parse_stock_import_file(import_batch: StockImport) -> list[StockImportItem]:
         item.save()
         created_items.append(item)
 
-    import_batch.status = StockImportStatus.PENDING_REVIEW
-    import_batch.save(update_fields=["status", "updated_at"])
+    _refresh_batch_counters(import_batch)
+    import_batch.status = _batch_status(created_items)
+    import_batch.processed_at = timezone.now()
+    import_batch.save(
+        update_fields=[
+            "status",
+            "processed_at",
+            "total_rows",
+            "total_valid_items",
+            "total_error_items",
+            "updated_at",
+        ]
+    )
     return created_items
 
 
 def match_import_items(import_batch: StockImport) -> list[StockImportItem]:
-    matched_items: list[StockImportItem] = []
+    return prepare_stock_import_items(import_batch)
+
+
+def prepare_stock_import_items(import_batch: StockImport) -> list[StockImportItem]:
+    import_batch = StockImport.objects.get(pk=import_batch.pk)
+    if import_batch.status == StockImportStatus.CONFIRMED:
+        raise ValidationError("Importacao ja confirmada.")
+    if import_batch.status == StockImportStatus.CANCELLED:
+        raise ValidationError("Importacao cancelada nao pode ser revalidada.")
+    prepared_items: list[StockImportItem] = []
     for item in import_batch.items.select_related("material").order_by("row_number"):
         if item.status == StockImportItemStatus.IGNORED:
+            item.error_message = ""
+            item.save(update_fields=["error_message", "updated_at"])
+            prepared_items.append(item)
             continue
-        material = item.material or find_material_for_import_item(item)
-        item.material = material
-        item.status = _status_for_item(item)
-        if material and item.original_quantity and item.status == StockImportItemStatus.OK:
-            item.confirmed_quantity = item.original_quantity
+        _validate_item(item)
         item.save()
-        matched_items.append(item)
-    return matched_items
+        prepared_items.append(item)
+
+    _refresh_batch_counters(import_batch)
+    import_batch.status = _batch_status(prepared_items)
+    import_batch.processed_at = timezone.now()
+    import_batch.save(
+        update_fields=[
+            "status",
+            "processed_at",
+            "total_valid_items",
+            "total_error_items",
+            "updated_at",
+        ]
+    )
+    return prepared_items
+
+
+def match_stock_import_item_material(item: StockImportItem) -> Material | None:
+    return find_material_for_import_item(item)
 
 
 def validate_import_batch(import_batch: StockImport) -> list[str]:
@@ -111,6 +161,11 @@ def confirm_stock_import(import_batch: StockImport, user=None) -> list[StockImpo
         .select_related("destination_location")
         .get(pk=import_batch.pk)
     )
+    if import_batch.status == StockImportStatus.CONFIRMED:
+        raise ValidationError("Importacao ja confirmada.")
+    if import_batch.status == StockImportStatus.CANCELLED:
+        raise ValidationError("Importacao cancelada nao pode ser confirmada.")
+    prepare_stock_import_items(import_batch)
     errors = validate_import_batch(import_batch)
     if errors:
         raise ValidationError(errors)
@@ -120,6 +175,7 @@ def confirm_stock_import(import_batch: StockImport, user=None) -> list[StockImpo
         import_batch.items.select_for_update(of=("self",))
         .select_related("material")
         .filter(status=StockImportItemStatus.OK)
+        .order_by("row_number", "id")
     ):
         movement = register_stock_movement(
             material=item.material,
@@ -136,7 +192,8 @@ def confirm_stock_import(import_batch: StockImport, user=None) -> list[StockImpo
 
     import_batch.status = StockImportStatus.CONFIRMED
     import_batch.confirmed_at = timezone.now()
-    import_batch.save(update_fields=["status", "confirmed_at", "updated_at"])
+    import_batch.total_movements_created = len(confirmed_items)
+    import_batch.save(update_fields=["status", "confirmed_at", "total_movements_created", "updated_at"])
     return confirmed_items
 
 
@@ -238,9 +295,9 @@ def _normalize_dict_rows(rows: list[dict], *, first_data_row: int) -> list[tuple
 
 
 def _canonical_column(column_name: str) -> str:
-    normalized = normalize_description(column_name)
+    normalized = normalize_description(column_name).replace("_", " ")
     for canonical, aliases in COLUMN_ALIASES.items():
-        if normalized in {normalize_description(alias) for alias in aliases}:
+        if normalized in {normalize_description(alias).replace("_", " ") for alias in aliases}:
             return canonical
     return ""
 
@@ -254,22 +311,62 @@ def _item_from_row(import_batch: StockImport, row_number: int, row: dict[str, st
         original_code=row.get("code", ""),
         supplier_code=row.get("supplier_code", ""),
         original_description=row.get("description", ""),
+        original_brand=row.get("brand", ""),
+        original_supplier=row.get("supplier", ""),
         original_unit=row.get("unit", ""),
         raw_quantity=raw_quantity,
         original_quantity=quantity,
-        unit_price=_parse_decimal(row.get("unit_price", ""), allow_empty=True),
-        total_price=_parse_decimal(row.get("total_price", ""), allow_empty=True),
+        unit_price=_parse_decimal(row.get("unit_price", ""), allow_empty=True, places=Decimal("0.0001")),
+        total_price=_parse_decimal(row.get("total_price", ""), allow_empty=True, places=Decimal("0.01")),
         note=row.get("note", ""),
     )
-    item.material = find_material_for_import_item(item)
-    item.status = _status_for_item(item)
-    if item.status == StockImportItemStatus.OK:
-        item.confirmed_quantity = quantity
+    item.confirmed_quantity = quantity
+    _validate_item(item)
     return item
 
 
+def _validate_item(item: StockImportItem) -> None:
+    if item.status == StockImportItemStatus.IGNORED:
+        item.error_message = ""
+        return
+    if not (item.original_code or item.supplier_code or item.original_description):
+        item.status = StockImportItemStatus.PENDING_MATERIAL
+        item.error_message = "Codigo ou descricao do material obrigatorio."
+        item.confirmed_quantity = None
+        return
+    if not item.material_id:
+        item.material = find_material_for_import_item(item)
+    if not item.material_id:
+        item.status = StockImportItemStatus.PENDING_MATERIAL
+        item.error_message = "Material nao identificado."
+        item.confirmed_quantity = None
+        return
+
+    quantity = item.confirmed_quantity if item.confirmed_quantity is not None else item.original_quantity
+    if quantity is None:
+        item.status = StockImportItemStatus.PENDING_QUANTITY
+        item.error_message = "Quantidade obrigatoria e deve ser numerica."
+        item.confirmed_quantity = None
+        return
+    quantity = q_qty(quantity)
+    if quantity <= 0:
+        item.status = StockImportItemStatus.PENDING_QUANTITY
+        item.error_message = "Quantidade deve ser maior que zero."
+        item.confirmed_quantity = None
+        return
+    if _has_unit_divergence(item) and not item.manual_adjustment:
+        item.status = StockImportItemStatus.PENDING_UNIT
+        item.error_message = "Unidade da planilha diverge da unidade padrao do material."
+        item.confirmed_quantity = None
+        return
+
+    item.confirmed_quantity = quantity
+    item.status = StockImportItemStatus.OK
+    item.error_message = ""
+
+
 def _status_for_item(item: StockImportItem) -> str:
-    if not item.original_description:
+    if not (item.original_code or item.supplier_code or item.original_description):
         return StockImportItemStatus.PENDING_MATERIAL
     if item.original_quantity is None or item.original_quantity <= 0:
         return StockImportItemStatus.PENDING_QUANTITY
@@ -291,7 +388,7 @@ def _has_unit_divergence(item: StockImportItem) -> bool:
     return original not in material_units
 
 
-def _parse_decimal(value, *, allow_empty: bool = False) -> Decimal | None:
+def _parse_decimal(value, *, allow_empty: bool = False, places: Decimal = QTY_Q) -> Decimal | None:
     if value is None or str(value).strip() == "":
         return None if allow_empty else None
     text = str(value).strip()
@@ -300,15 +397,46 @@ def _parse_decimal(value, *, allow_empty: bool = False) -> Decimal | None:
     elif "," in text:
         text = text.replace(",", ".")
     try:
-        return Decimal(text).quantize(Decimal("0.001"))
+        return Decimal(text).quantize(places)
     except (InvalidOperation, ValueError):
         return None
 
 
+def q_qty(value) -> Decimal:
+    try:
+        return Decimal(str(value or "0").replace(",", ".")).quantize(QTY_Q)
+    except (InvalidOperation, ValueError):
+        raise ValidationError("Quantidade invalida.")
+
+
+def _refresh_batch_counters(import_batch: StockImport) -> None:
+    items = list(import_batch.items.all())
+    import_batch.total_rows = len(items)
+    import_batch.total_valid_items = sum(1 for item in items if item.status == StockImportItemStatus.OK)
+    import_batch.total_error_items = sum(
+        1
+        for item in items
+        if item.status
+        not in {
+            StockImportItemStatus.OK,
+            StockImportItemStatus.IGNORED,
+            StockImportItemStatus.CONFIRMED,
+        }
+    )
+
+
+def _batch_status(items: list[StockImportItem]) -> str:
+    has_blocking_issue = any(
+        item.status not in {StockImportItemStatus.OK, StockImportItemStatus.IGNORED} for item in items
+    )
+    return StockImportStatus.ERROR if has_blocking_issue else StockImportStatus.PENDING_REVIEW
+
+
 def _movement_note(import_batch: StockImport, item: StockImportItem) -> str:
     parts = [f"Entrada compra importacao #{import_batch.pk}", item.original_description]
-    if import_batch.supplier:
-        parts.append(f"Fornecedor: {import_batch.supplier}")
+    supplier = item.original_supplier or import_batch.supplier
+    if supplier:
+        parts.append(f"Fornecedor: {supplier}")
     if import_batch.note:
         parts.append(import_batch.note)
     if item.manual_adjustment:
