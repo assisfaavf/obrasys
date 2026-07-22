@@ -265,12 +265,7 @@
           <tr>
             <td>{{ row.line.item.eap_code }}</td>
             <td>{{ row.line.item.description }}</td>
-            <td>
-              {{ row.line.location.code|default:"-" }}
-              {% if row.line.application_reference %}
-                <br><span class="muted">{{ row.line.application_reference }}</span>
-              {% endif %}
-            </td>
+            <td>{{ row.line.location.code|default:"-" }}</td>
             <td>{{ row.effective_qty|br_decimal:2 }}</td>
             <td>{{ row.previous|br_decimal:2 }}</td>
             <td>{{ row.accumulated|br_decimal:2 }}</td>
@@ -304,7 +299,11 @@
     {% if is_draft %}
       <h3>Adicionar linha contratada</h3>
       <p class="actions">
+        <span>Adicionar material</span>
         <a href="{% url 'billing:measurement_bulk_materials_add' period.id %}">Adicionar varios materiais</a>
+        {% if has_active_predefined_environments %}
+          <a href="{% url 'billing:measurement_environment_materials_add' period.id %}">Adicionar materiais por ambiente</a>
+        {% endif %}
       </p>
       <form method="post">
         {% csrf_token %}

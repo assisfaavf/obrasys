@@ -451,6 +451,7 @@ def add_or_merge_contracted_line(
             line_kind=MeasurementLineKind.CONTRACTED,
             item=item,
             location=location,
+            application_reference=(application_reference or "").strip(),
             is_generated_additional=False,
         )
         .first()

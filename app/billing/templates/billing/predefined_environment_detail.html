@@ -1,0 +1,119 @@
+{% extends "billing/base.html" %}
+{% load billing_format %}
+
+{% block title %}{{ environment.name }}{% endblock %}
+
+{% block content %}
+  <style>
+    .measurement-item-select {
+      display: block;
+      width: min(100%, 56rem);
+      max-width: 100%;
+      box-sizing: border-box;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .measurement-item-select option {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+  </style>
+
+  <h1>{{ environment.name }}</h1>
+  <p class="muted">
+    {{ project.name }} |
+    {{ environment.is_active|yesno:"Ativo,Inativo" }}
+  </p>
+  {% if environment.description %}
+    <p>{{ environment.description }}</p>
+  {% endif %}
+
+  <div class="actions">
+    <a href="{% url 'billing:predefined_environment_list' project.id %}">Voltar</a>
+    <a href="{% url 'billing:predefined_environment_edit' environment.id %}">Editar ambiente</a>
+  </div>
+
+  <div class="card">
+    <h2>Duplicar ambiente</h2>
+    <form method="post" action="{% url 'billing:predefined_environment_duplicate' environment.id %}">
+      {% csrf_token %}
+      <p>
+        <label for="duplicate-name">Novo nome</label>
+        <input id="duplicate-name" type="text" name="name" maxlength="150" required>
+      </p>
+      <button type="submit">Duplicar</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Adicionar disciplina</h2>
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="add_discipline">
+      {{ discipline_form.as_p }}
+      <button type="submit">Adicionar disciplina</button>
+    </form>
+  </div>
+
+  {% for section in discipline_sections %}
+    <div class="card">
+      <h2>{{ section.discipline.discipline }}</h2>
+      <p>Status: {{ section.discipline.is_active|yesno:"Ativa,Inativa" }}</p>
+      <form method="post" class="actions">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="toggle_discipline">
+        <input type="hidden" name="environment_discipline_id" value="{{ section.discipline.id }}">
+        <button type="submit">{{ section.discipline.is_active|yesno:"Inativar,Ativar" }}</button>
+      </form>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Ordem</th>
+            <th>Material</th>
+            <th>Unidade</th>
+            <th>Quantidade padrao</th>
+            <th>Status</th>
+            <th>Acoes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for material in section.discipline.materials.all %}
+            <tr>
+              <td>{{ material.order_index }}</td>
+              <td>{{ material.item.eap_code }} - {{ material.item.description }}</td>
+              <td>{{ material.item.unit.code }}</td>
+              <td>{{ material.default_quantity|br_decimal:3 }}</td>
+              <td>{{ material.is_active|yesno:"Ativo,Inativo" }}</td>
+              <td>
+                <form method="post">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="toggle_material">
+                  <input type="hidden" name="material_id" value="{{ material.id }}">
+                  <button type="submit">{{ material.is_active|yesno:"Inativar,Ativar" }}</button>
+                </form>
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="6">Sem materiais padrao nesta disciplina.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h3>Adicionar material padrao</h3>
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="add_material">
+        <input type="hidden" name="environment_discipline_id" value="{{ section.discipline.id }}">
+        {{ section.material_form.as_p }}
+        <button type="submit">Adicionar material</button>
+      </form>
+    </div>
+  {% empty %}
+    <div class="card">
+      <p>Adicione uma disciplina para cadastrar materiais padrao.</p>
+    </div>
+  {% endfor %}
+{% endblock %}

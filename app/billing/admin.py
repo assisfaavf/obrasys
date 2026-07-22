@@ -6,6 +6,9 @@ from billing.models import (
     MeasurementPeriod,
     MeasurementSettlement,
     MeasurementWorkflowHistory,
+    PredefinedEnvironment,
+    PredefinedEnvironmentDiscipline,
+    PredefinedEnvironmentMaterial,
 )
 
 
@@ -17,6 +20,48 @@ class MeasurementWorkflowHistoryInline(admin.TabularInline):
 
     def has_add_permission(self, request, obj=None):
         return False
+
+
+class PredefinedEnvironmentMaterialInline(admin.TabularInline):
+    model = PredefinedEnvironmentMaterial
+    extra = 1
+    fields = ("item", "default_quantity", "order_index", "is_active")
+
+
+class PredefinedEnvironmentDisciplineInline(admin.TabularInline):
+    model = PredefinedEnvironmentDiscipline
+    extra = 1
+    fields = ("discipline", "is_active")
+
+
+@admin.register(PredefinedEnvironment)
+class PredefinedEnvironmentAdmin(admin.ModelAdmin):
+    list_display = ("project", "name", "is_active", "updated_at")
+    list_filter = ("project", "is_active")
+    search_fields = ("project__name", "name", "description")
+    ordering = ("project", "name")
+    inlines = (PredefinedEnvironmentDisciplineInline,)
+
+
+@admin.register(PredefinedEnvironmentDiscipline)
+class PredefinedEnvironmentDisciplineAdmin(admin.ModelAdmin):
+    list_display = ("environment", "discipline", "is_active", "updated_at")
+    list_filter = ("environment__project", "discipline", "is_active")
+    search_fields = ("environment__name", "environment__project__name", "discipline__name")
+    ordering = ("environment", "discipline__name")
+    inlines = (PredefinedEnvironmentMaterialInline,)
+
+
+@admin.register(PredefinedEnvironmentMaterial)
+class PredefinedEnvironmentMaterialAdmin(admin.ModelAdmin):
+    list_display = ("environment_discipline", "item", "default_quantity", "order_index", "is_active")
+    list_filter = ("environment_discipline__environment__project", "environment_discipline__discipline", "is_active")
+    search_fields = (
+        "environment_discipline__environment__name",
+        "item__eap_code",
+        "item__description",
+    )
+    ordering = ("environment_discipline", "order_index", "item__eap_code")
 
 
 @admin.register(MeasurementPeriod)

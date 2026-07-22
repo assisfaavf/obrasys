@@ -11,9 +11,12 @@ from billing.models import (
     MeasurementLineHistory,
     MeasurementPeriod,
     MeasurementSettlement,
+    PredefinedEnvironment,
+    PredefinedEnvironmentDiscipline,
+    PredefinedEnvironmentMaterial,
 )
 from billing.services.measurement_calc import split_contracted_and_excess
-from catalog.models import BudgetItem, Unit
+from catalog.models import BudgetItem, Discipline, Unit
 from core.models import ProjectLocation
 
 
@@ -346,6 +349,187 @@ BulkContractedLineItemFormSet = formset_factory(
     extra=1,
     can_delete=True,
 )
+
+
+class PredefinedEnvironmentForm(forms.ModelForm):
+    class Meta:
+        model = PredefinedEnvironment
+        fields = ["name", "description", "is_active"]
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 3}),
+        }
+
+    def __init__(self, *args, project, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.project = project
+        self.fields["name"].label = "Nome"
+        self.fields["description"].label = "Descricao"
+        self.fields["is_active"].label = "Ativo"
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        instance.project = self.project
+        if commit:
+            instance.save()
+        return instance
+
+
+class PredefinedEnvironmentDisciplineForm(forms.ModelForm):
+    class Meta:
+        model = PredefinedEnvironmentDiscipline
+        fields = ["discipline", "is_active"]
+
+    def __init__(self, *args, environment: PredefinedEnvironment, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.environment = environment
+        existing_ids = environment.disciplines.exclude(pk=getattr(self.instance, "pk", None)).values_list(
+            "discipline_id",
+            flat=True,
+        )
+        self.fields["discipline"].queryset = (
+            Discipline.objects.filter(is_active=True).exclude(id__in=existing_ids).order_by("name")
+        )
+        self.fields["discipline"].label = "Disciplina"
+        self.fields["is_active"].label = "Ativa"
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        instance.environment = self.environment
+        if commit:
+            instance.save()
+        return instance
+
+
+class PredefinedEnvironmentMaterialForm(forms.ModelForm):
+    class Meta:
+        model = PredefinedEnvironmentMaterial
+        fields = ["item", "default_quantity", "order_index", "is_active"]
+
+    def __init__(self, *args, environment_discipline: PredefinedEnvironmentDiscipline, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.environment_discipline = environment_discipline
+        self.fields["item"].queryset = BudgetItem.objects.filter(
+            project=environment_discipline.environment.project,
+            discipline=environment_discipline.discipline,
+            is_active=True,
+        ).order_by("eap_code")
+        _apply_measurement_item_select_attrs(self.fields["item"])
+        self.fields["item"].label = "Material"
+        self.fields["default_quantity"].label = "Quantidade padrao"
+        self.fields["order_index"].label = "Ordem"
+        self.fields["is_active"].label = "Ativo"
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        instance.environment_discipline = self.environment_discipline
+        if commit:
+            instance.save()
+        return instance
+
+
+class EnvironmentMaterialApplicationForm(forms.Form):
+    environment = forms.ModelChoiceField(
+        queryset=PredefinedEnvironment.objects.none(),
+        label="Ambiente predefinido",
+    )
+    environment_discipline = forms.ModelChoiceField(
+        queryset=PredefinedEnvironmentDiscipline.objects.none(),
+        label="Disciplina",
+    )
+    location = forms.ModelChoiceField(
+        queryset=ProjectLocation.objects.none(),
+        required=False,
+        label="Localizacao",
+    )
+    application_reference = forms.CharField(
+        required=True,
+        max_length=150,
+        label="Referencia da aplicacao",
+        help_text="Ex.: Banheiro Casal - apartamento 301.",
+    )
+    application_date = forms.DateField(
+        required=False,
+        label="Data de aplicacao",
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+    use_today = forms.BooleanField(required=False, label="Hoje")
+    note = forms.CharField(
+        required=False,
+        label="Notas",
+        max_length=255,
+        widget=forms.Textarea(attrs={"rows": 2}),
+    )
+    excess_justification = forms.CharField(
+        required=False,
+        label="Justificativa do excedente",
+        widget=forms.Textarea(attrs={"rows": 2}),
+    )
+
+    def __init__(self, *args, period: MeasurementPeriod, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.period = period
+        environments = (
+            PredefinedEnvironment.objects.filter(
+                project=period.project,
+                is_active=True,
+                disciplines__is_active=True,
+                disciplines__materials__is_active=True,
+            )
+            .distinct()
+            .order_by("name")
+        )
+        self.fields["environment"].queryset = environments
+
+        selected_environment_id = None
+        if self.is_bound:
+            selected_environment_id = self.data.get(self.add_prefix("environment"))
+        else:
+            selected_environment = self.initial.get("environment")
+            selected_environment_id = getattr(selected_environment, "id", selected_environment)
+
+        disciplines = PredefinedEnvironmentDiscipline.objects.none()
+        if selected_environment_id:
+            disciplines = (
+                PredefinedEnvironmentDiscipline.objects.filter(
+                    environment_id=selected_environment_id,
+                    environment__project=period.project,
+                    environment__is_active=True,
+                    is_active=True,
+                    materials__is_active=True,
+                )
+                .select_related("discipline")
+                .distinct()
+                .order_by("discipline__name")
+            )
+        self.fields["environment_discipline"].queryset = disciplines
+        self.fields["location"].queryset = ProjectLocation.objects.filter(
+            project=period.project,
+            is_active=True,
+        ).order_by("order_index", "code")
+
+    def clean(self):
+        cleaned_data = super().clean()
+        environment = cleaned_data.get("environment")
+        environment_discipline = cleaned_data.get("environment_discipline")
+        application_date = cleaned_data.get("application_date")
+
+        if cleaned_data.get("use_today") or not application_date:
+            cleaned_data["application_date"] = timezone.localdate()
+
+        if environment and environment.project_id != self.period.project_id:
+            self.add_error("environment", "Ambiente nao pertence a esta obra.")
+        if environment and not environment.is_active:
+            self.add_error("environment", "Ambiente inativo.")
+
+        if environment_discipline:
+            if environment and environment_discipline.environment_id != environment.id:
+                self.add_error("environment_discipline", "Disciplina nao pertence ao ambiente selecionado.")
+            if not environment_discipline.is_active:
+                self.add_error("environment_discipline", "Disciplina inativa.")
+            if not environment_discipline.materials.filter(is_active=True).exists():
+                self.add_error("environment_discipline", "Disciplina sem materiais ativos.")
+
+        return cleaned_data
 
 
 class ContractedLineEditForm(MeasurementLineForm):

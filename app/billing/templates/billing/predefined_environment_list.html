@@ -1,0 +1,42 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Ambientes predefinidos{% endblock %}
+
+{% block content %}
+  <h1>Ambientes predefinidos - {{ project.name }}</h1>
+
+  <div class="actions">
+    <a href="{% url 'billing:project_detail' project.id %}">Voltar para obra</a>
+    <a href="{% url 'billing:predefined_environment_create' project.id %}">Novo ambiente predefinido</a>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Nome</th>
+        <th>Disciplinas</th>
+        <th>Materiais padrao</th>
+        <th>Status</th>
+        <th>Acoes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for environment in environments %}
+        <tr>
+          <td>{{ environment.name }}</td>
+          <td>{{ environment.discipline_count }}</td>
+          <td>{{ environment.material_count }}</td>
+          <td>{{ environment.is_active|yesno:"Ativo,Inativo" }}</td>
+          <td>
+            <a href="{% url 'billing:predefined_environment_detail' environment.id %}">Visualizar</a>
+            <a href="{% url 'billing:predefined_environment_edit' environment.id %}">Editar</a>
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="5">Sem ambientes predefinidos cadastrados.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}
