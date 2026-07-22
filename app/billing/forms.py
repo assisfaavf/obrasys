@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django import forms
+from django.forms import BaseFormSet, formset_factory
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
@@ -195,6 +196,140 @@ class ContractedLineAddForm(forms.ModelForm):
             self.add_error("excess_justification", "Justificativa do excedente e obrigatoria.")
 
         return cleaned_data
+
+
+class BulkContractedLineCommonForm(forms.Form):
+    location = forms.ModelChoiceField(
+        queryset=ProjectLocation.objects.none(),
+        required=False,
+        label="Localizacao",
+    )
+    application_date = forms.DateField(
+        required=False,
+        label="Data de aplicacao",
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+    use_today = forms.BooleanField(required=False, label="Hoje")
+    note = forms.CharField(
+        required=False,
+        label="Notas",
+        max_length=255,
+        widget=forms.Textarea(attrs={"rows": 2}),
+    )
+    excess_justification = forms.CharField(
+        required=False,
+        label="Justificativa do excedente",
+        widget=forms.Textarea(attrs={"rows": 2}),
+    )
+
+    def __init__(self, *args, period: MeasurementPeriod, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.period = period
+        self.fields["location"].queryset = ProjectLocation.objects.filter(
+            project=period.project,
+            is_active=True,
+        ).order_by("order_index", "code")
+
+    def clean(self):
+        cleaned_data = super().clean()
+        application_date = cleaned_data.get("application_date")
+        if cleaned_data.get("use_today") or not application_date:
+            cleaned_data["application_date"] = timezone.localdate()
+        return cleaned_data
+
+
+class BulkContractedLineItemForm(forms.Form):
+    item = forms.ModelChoiceField(
+        queryset=BudgetItem.objects.none(),
+        required=False,
+        label="Item",
+    )
+    qty_period = forms.DecimalField(
+        required=False,
+        label="Quantidade no periodo",
+        max_digits=14,
+        decimal_places=3,
+    )
+
+    def __init__(self, *args, period: MeasurementPeriod, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.period = period
+        self.fields["item"].queryset = BudgetItem.objects.filter(
+            project=period.project,
+            is_active=True,
+        ).order_by("eap_code")
+        _apply_measurement_item_select_attrs(self.fields["item"])
+
+    def clean(self):
+        cleaned_data = super().clean()
+        item = cleaned_data.get("item")
+        qty_period = cleaned_data.get("qty_period")
+        is_marked_for_delete = self.cleaned_data.get("DELETE", False)
+
+        if is_marked_for_delete:
+            return cleaned_data
+        if not item and qty_period is None:
+            cleaned_data["is_empty"] = True
+            return cleaned_data
+        if not item:
+            self.add_error("item", "Item obrigatorio.")
+        if qty_period is None:
+            self.add_error("qty_period", "Quantidade obrigatoria.")
+        elif qty_period <= 0:
+            self.add_error("qty_period", "quantity_added deve ser > 0.")
+        cleaned_data["is_empty"] = False
+        return cleaned_data
+
+
+class BaseBulkContractedLineItemFormSet(BaseFormSet):
+    def __init__(self, *args, period: MeasurementPeriod, **kwargs):
+        self.period = period
+        super().__init__(*args, **kwargs)
+
+    def get_form_kwargs(self, index):
+        kwargs = super().get_form_kwargs(index)
+        kwargs["period"] = self.period
+        return kwargs
+
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+
+        seen_item_ids: set[int] = set()
+        valid_rows = 0
+        for form in self.forms:
+            if not form.cleaned_data:
+                continue
+            if form.cleaned_data.get("DELETE") or form.cleaned_data.get("is_empty"):
+                continue
+            item = form.cleaned_data.get("item")
+            if not item:
+                continue
+            valid_rows += 1
+            if item.id in seen_item_ids:
+                form.add_error("item", f'O item "{item}" foi informado mais de uma vez.')
+                raise ValidationError("Ha itens duplicados no cadastro em lote.")
+            seen_item_ids.add(item.id)
+
+        if valid_rows == 0:
+            raise ValidationError("Informe pelo menos um item para cadastrar.")
+
+    def valid_item_forms(self):
+        for form in self.forms:
+            if not form.cleaned_data:
+                continue
+            if form.cleaned_data.get("DELETE") or form.cleaned_data.get("is_empty"):
+                continue
+            yield form
+
+
+BulkContractedLineItemFormSet = formset_factory(
+    BulkContractedLineItemForm,
+    formset=BaseBulkContractedLineItemFormSet,
+    extra=1,
+    can_delete=True,
+)
 
 
 class ContractedLineEditForm(MeasurementLineForm):

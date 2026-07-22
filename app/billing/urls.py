@@ -14,6 +14,11 @@ urlpatterns = [
     ),
     path("measurements/<int:measurement_id>/", views.measurement_detail_view, name="measurement_detail"),
     path(
+        "measurements/<int:measurement_id>/materials/bulk-add/",
+        views.measurement_bulk_materials_add_view,
+        name="measurement_bulk_materials_add",
+    ),
+    path(
         "measurements/<int:measurement_id>/export/xlsx",
         views.measurement_export_xlsx_view,
         name="measurement_export_xlsx",

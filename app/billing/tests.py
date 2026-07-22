@@ -4,11 +4,13 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from django.urls import reverse
 
 from billing.forms import MeasurementPeriodForm
 from billing.models import (
     FinancialStatus,
     MeasurementLine,
+    MeasurementLineHistory,
     MeasurementPeriod,
     MeasurementSettlement,
     MeasurementWorkflowHistory,
@@ -22,7 +24,7 @@ from billing.services.measurement_calc import (
 )
 from billing.services.workflow import transition_measurement_status
 from catalog.models import BudgetItem, Unit
-from core.models import Client, Project
+from core.models import Client, Project, ProjectLocation
 from pricing.models import PriceIndex, PriceIndexValue, ProjectPriceAdjustment
 
 
@@ -280,6 +282,315 @@ class MeasurementPeriodFormTests(TestCase):
 
         self.assertTrue(form.is_valid(), form.errors.as_text())
         self.assertEqual(form.cleaned_data["ref_month"], date(2026, 4, 1))
+
+
+class MeasurementBulkMaterialsTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_superuser(
+            username="bulk-admin",
+            email="bulk-admin@example.com",
+            password="test",
+        )
+        self.regular_user = get_user_model().objects.create_user(username="bulk-user", password="test")
+        self.client_obj = Client.objects.create(name="Cliente Lote")
+        self.project = Project.objects.create(name="Projeto Lote", client=self.client_obj)
+        self.other_project = Project.objects.create(name="Outro Projeto", client=self.client_obj)
+        self.unit = Unit.objects.create(code="UN", name="Unidade")
+        self.location = ProjectLocation.objects.create(
+            project=self.project,
+            code="PAV-01",
+            name="Pavimento 1",
+            order_index=1,
+        )
+        self.other_location = ProjectLocation.objects.create(
+            project=self.other_project,
+            code="OUTRO",
+            name="Outro local",
+            order_index=1,
+        )
+        self.period = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=1,
+            ref_month=date(2026, 7, 1),
+            start_date=date(2026, 7, 1),
+            end_date=date(2026, 7, 31),
+        )
+        self.item_a = self._create_item("1.1", "Tubo PVC 100mm")
+        self.item_b = self._create_item("1.2", "Joelho PVC 100mm")
+        self.item_c = self._create_item("1.3", "Te PVC 100mm")
+        self.foreign_item = BudgetItem.objects.create(
+            project=self.other_project,
+            eap_code="9.1",
+            description="Item de outra obra",
+            unit=self.unit,
+            qty_contracted=Decimal("100"),
+            pu_material=Decimal("1"),
+            pu_labor=Decimal("1"),
+        )
+
+    def test_authorized_user_can_access_bulk_page(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.get(reverse("billing:measurement_bulk_materials_add", args=[self.period.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Informacoes compartilhadas")
+        self.assertContains(response, "id_items-TOTAL_FORMS")
+
+    def test_anonymous_user_is_redirected(self):
+        response = self.client.get(reverse("billing:measurement_bulk_materials_add", args=[self.period.id]))
+
+        self.assertEqual(response.status_code, 302)
+
+    def test_non_staff_user_cannot_use_bulk_page(self):
+        self.client.login(username="bulk-user", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "1")]),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_bulk_creates_multiple_independent_material_lines(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data(
+                [(self.item_a, "10"), (self.item_b, "4"), (self.item_c, "2")],
+                note="Material aplicado na prumada principal",
+            ),
+        )
+
+        self.assertRedirects(response, reverse("billing:measurement_detail", args=[self.period.id]))
+        lines = list(MeasurementLine.objects.order_by("item__eap_code"))
+        self.assertEqual(len(lines), 3)
+        self.assertEqual([line.item for line in lines], [self.item_a, self.item_b, self.item_c])
+        self.assertEqual([line.qty_period for line in lines], [Decimal("10.000"), Decimal("4.000"), Decimal("2.000")])
+        self.assertEqual({line.location for line in lines}, {self.location})
+        self.assertEqual({line.note for line in lines}, {"Material aplicado na prumada principal"})
+        histories = list(MeasurementLineHistory.objects.order_by("line__item__eap_code"))
+        self.assertEqual(len(histories), 3)
+        self.assertEqual({history.application_date for history in histories}, {date(2026, 7, 20)})
+        self.assertEqual({history.created_by for history in histories}, {self.user})
+
+    def test_bulk_saves_different_quantities_per_item(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "1.5"), (self.item_b, "7")]),
+        )
+
+        self.assertEqual(
+            list(MeasurementLine.objects.order_by("item__eap_code").values_list("qty_period", flat=True)),
+            [Decimal("1.500"), Decimal("7.000")],
+        )
+
+    def test_bulk_invalid_quantity_does_not_create_any_line(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2"), (self.item_b, "0")]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "quantity_added deve ser &gt; 0.")
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_bulk_rejects_item_from_another_project(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.foreign_item, "2")]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_bulk_rejects_location_from_another_project(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2")], location=self.other_location),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_bulk_blocks_locked_measurement(self):
+        self.period.workflow_status = WorkflowStatus.FINALIZED
+        self.period.save(update_fields=["workflow_status"])
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2")]),
+        )
+
+        self.assertRedirects(response, reverse("billing:measurement_detail", args=[self.period.id]))
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_bulk_is_atomic_when_later_item_is_invalid(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2"), (self.foreign_item, "3")]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(MeasurementLine.objects.exists())
+        self.assertFalse(MeasurementLineHistory.objects.exists())
+
+    def test_bulk_rejects_duplicate_item_in_same_submission(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2"), (self.item_a, "3")]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Ha itens duplicados no cadastro em lote.")
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_bulk_ignores_extra_empty_row(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2"), (self.item_b, "3"), (None, "")]),
+        )
+
+        self.assertEqual(MeasurementLine.objects.count(), 2)
+
+    def test_bulk_rejects_partially_filled_row(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2"), (self.item_b, "")]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Quantidade obrigatoria.")
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_bulk_deleted_row_is_not_processed(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2"), (self.item_b, "3")], deleted_indexes={1}),
+        )
+
+        line = MeasurementLine.objects.get()
+        self.assertEqual(line.item, self.item_a)
+
+    def test_bulk_allows_empty_note(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2")], note=""),
+        )
+
+        self.assertEqual(MeasurementLine.objects.get().note, "")
+
+    def test_bulk_success_message_contains_created_count(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2"), (self.item_b, "3")]),
+            follow=True,
+        )
+
+        messages = [str(message) for message in response.context["messages"]]
+        self.assertIn("2 materiais foram adicionados a medicao com sucesso.", messages)
+
+    def test_individual_contracted_line_add_still_works(self):
+        self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_detail", args=[self.period.id]),
+            {
+                "action": "add_contracted",
+                "contracted-item": str(self.item_a.id),
+                "contracted-location": str(self.location.id),
+                "contracted-qty_period": "2",
+                "contracted-application_date": "2026-07-20",
+                "contracted-note": "individual",
+                "contracted-excess_justification": "",
+            },
+        )
+
+        self.assertRedirects(response, reverse("billing:measurement_detail", args=[self.period.id]))
+        line = MeasurementLine.objects.get()
+        self.assertEqual(line.item, self.item_a)
+        self.assertEqual(line.qty_period, Decimal("2.000"))
+        self.assertEqual(line.histories.get().note, "individual")
+
+    def test_bulk_merges_with_existing_line_like_individual_flow(self):
+        MeasurementLine.objects.create(
+            period=self.period,
+            line_kind="CONTRACTED",
+            item=self.item_a,
+            location=self.location,
+            qty_period=Decimal("1"),
+        )
+        self.client.login(username="bulk-admin", password="test")
+
+        self.client.post(
+            reverse("billing:measurement_bulk_materials_add", args=[self.period.id]),
+            self._post_data([(self.item_a, "2")]),
+        )
+
+        self.assertEqual(MeasurementLine.objects.count(), 1)
+        self.assertEqual(MeasurementLine.objects.get().qty_period, Decimal("3.000"))
+
+    def _create_item(self, eap_code: str, description: str) -> BudgetItem:
+        return BudgetItem.objects.create(
+            project=self.project,
+            eap_code=eap_code,
+            description=description,
+            unit=self.unit,
+            qty_contracted=Decimal("100"),
+            pu_material=Decimal("1"),
+            pu_labor=Decimal("1"),
+        )
+
+    def _post_data(
+        self,
+        rows,
+        *,
+        location=None,
+        note: str = "Notas compartilhadas",
+        deleted_indexes: set[int] | None = None,
+    ) -> dict:
+        deleted_indexes = deleted_indexes or set()
+        data = {
+            "bulk-location": str((location or self.location).id),
+            "bulk-application_date": "2026-07-20",
+            "bulk-note": note,
+            "bulk-excess_justification": "",
+            "items-TOTAL_FORMS": str(len(rows)),
+            "items-INITIAL_FORMS": "0",
+            "items-MIN_NUM_FORMS": "0",
+            "items-MAX_NUM_FORMS": "1000",
+        }
+        for index, (item, quantity) in enumerate(rows):
+            data[f"items-{index}-item"] = "" if item is None else str(item.id)
+            data[f"items-{index}-qty_period"] = quantity
+            if index in deleted_indexes:
+                data[f"items-{index}-DELETE"] = "on"
+        return data
 
 
 class MeasurementWorkflowServiceTests(TestCase):
