@@ -1,0 +1,278 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Adicionar materiais por ambiente{% endblock %}
+
+{% block content %}
+  <style>
+    #environment-items-table {
+      table-layout: fixed;
+      width: 100%;
+    }
+
+    #environment-items-table th,
+    #environment-items-table td {
+      overflow-wrap: anywhere;
+      word-break: normal;
+    }
+
+    #environment-items-table th:nth-child(1),
+    #environment-items-table td:nth-child(1) {
+      width: 56px;
+    }
+
+    #environment-items-table th:nth-child(3),
+    #environment-items-table td:nth-child(3) {
+      width: 160px;
+    }
+
+    #environment-items-table th:nth-child(4),
+    #environment-items-table td:nth-child(4) {
+      width: 112px;
+    }
+
+    #environment-items-table select,
+    #environment-items-table input[type="number"],
+    #environment-items-table input[type="text"] {
+      box-sizing: border-box;
+      max-width: 100%;
+      width: 100%;
+      min-width: 0;
+    }
+
+    #environment-items-table select,
+    #environment-items-table option {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 720px) {
+      #environment-items-table,
+      #environment-items-table thead,
+      #environment-items-table tbody,
+      #environment-items-table th,
+      #environment-items-table td,
+      #environment-items-table tr {
+        display: block;
+        width: 100%;
+      }
+
+      #environment-items-table thead {
+        display: none;
+      }
+
+      #environment-items-table tr {
+        border: 1px solid #ccc;
+        margin-bottom: 12px;
+      }
+
+      #environment-items-table td {
+        border: 0;
+        border-bottom: 1px solid #ddd;
+        box-sizing: border-box;
+      }
+    }
+  </style>
+
+  <h1>Adicionar materiais por ambiente</h1>
+  <p class="muted">
+    Medicao {{ period.number }} - {{ period.project.name }}
+  </p>
+
+  <form method="get" class="card">
+    <h2>Carregar padrao</h2>
+    <p>
+      {{ common_form.environment.label_tag }}
+      {{ common_form.environment }}
+    </p>
+    <p>
+      {{ common_form.environment_discipline.label_tag }}
+      {{ common_form.environment_discipline }}
+    </p>
+    <button type="submit">Carregar materiais padrao</button>
+  </form>
+
+  <form method="post" id="environment-materials-form">
+    {% csrf_token %}
+
+    {% if common_form.non_field_errors %}
+      <div class="errors">{{ common_form.non_field_errors }}</div>
+    {% endif %}
+    {% if item_formset.non_form_errors %}
+      <div class="errors">{{ item_formset.non_form_errors }}</div>
+    {% endif %}
+
+    <div class="card">
+      <h2>Aplicacao</h2>
+      <p>
+        {{ common_form.environment.label_tag }}
+        {{ common_form.environment }}
+        {{ common_form.environment.errors }}
+      </p>
+      <p>
+        {{ common_form.environment_discipline.label_tag }}
+        {{ common_form.environment_discipline }}
+        {{ common_form.environment_discipline.errors }}
+      </p>
+      <p>
+        {{ common_form.location.label_tag }}
+        {{ common_form.location }}
+        {{ common_form.location.errors }}
+      </p>
+      <p>
+        {{ common_form.application_reference.label_tag }}
+        {{ common_form.application_reference }}
+        {{ common_form.application_reference.errors }}
+        <span class="muted">{{ common_form.application_reference.help_text }}</span>
+      </p>
+      <p>
+        {{ common_form.application_date.label_tag }}
+        {{ common_form.application_date }}
+        {{ common_form.application_date.errors }}
+      </p>
+      <p>
+        <label for="{{ common_form.use_today.id_for_label }}">
+          {{ common_form.use_today }} {{ common_form.use_today.label }}
+        </label>
+        {{ common_form.use_today.errors }}
+      </p>
+      <p>
+        {{ common_form.note.label_tag }}
+        {{ common_form.note }}
+        {{ common_form.note.errors }}
+      </p>
+      <p>
+        {{ common_form.excess_justification.label_tag }}
+        {{ common_form.excess_justification }}
+        {{ common_form.excess_justification.errors }}
+        <span class="muted">Use quando algum item ultrapassar o saldo contratual.</span>
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Materiais</h2>
+      <p class="muted">As quantidades abaixo sao uma copia para esta aplicacao. O padrao original nao sera alterado.</p>
+      {{ item_formset.management_form }}
+      <table id="environment-items-table">
+        <thead>
+          <tr>
+            <th>Linha</th>
+            <th>Material</th>
+            <th>Quantidade</th>
+            <th>Acao</th>
+          </tr>
+        </thead>
+        <tbody id="environment-items-body">
+          {% for form in item_formset %}
+            <tr class="environment-item-row">
+              <td>{{ forloop.counter }}</td>
+              <td>
+                {{ form.item }}
+                {{ form.item.errors }}
+                {% for hidden in form.hidden_fields %}{{ hidden }}{% endfor %}
+              </td>
+              <td>
+                {{ form.qty_period }}
+                {{ form.qty_period.errors }}
+              </td>
+              <td>
+                <button type="button" class="remove-row">Remover</button>
+                <span style="display:none;">{{ form.DELETE }}</span>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <button type="button" id="add-item-row">Adicionar outro material</button>
+    </div>
+
+    <div class="actions">
+      <a href="{% url 'billing:measurement_detail' period.id %}">Cancelar</a>
+      <button type="submit">Adicionar materiais a medicao</button>
+    </div>
+  </form>
+
+  <template id="empty-item-row-template">
+    <tr class="environment-item-row">
+      <td class="row-number">__row_number__</td>
+      <td>
+        {{ item_formset.empty_form.item }}
+        {% for hidden in item_formset.empty_form.hidden_fields %}{{ hidden }}{% endfor %}
+      </td>
+      <td>{{ item_formset.empty_form.qty_period }}</td>
+      <td>
+        <button type="button" class="remove-row">Remover</button>
+        <span style="display:none;">{{ item_formset.empty_form.DELETE }}</span>
+      </td>
+    </tr>
+  </template>
+
+  <script>
+    (function () {
+      const getForm = document.querySelector("form[method='get']");
+      const getEnvironmentEl = getForm ? getForm.querySelector("[name='env-environment']") : null;
+      const postEnvironmentEl = document.querySelector("#environment-materials-form [name='env-environment']");
+      const postDisciplineEl = document.querySelector("#environment-materials-form [name='env-environment_discipline']");
+      const getDisciplineEl = getForm ? getForm.querySelector("[name='env-environment_discipline']") : null;
+      const body = document.getElementById("environment-items-body");
+      const addButton = document.getElementById("add-item-row");
+      const template = document.getElementById("empty-item-row-template");
+      const totalForms = document.getElementById("id_items-TOTAL_FORMS");
+      const applicationDateEl = document.getElementById("{{ common_form.application_date.id_for_label }}");
+      const useTodayEl = document.getElementById("{{ common_form.use_today.id_for_label }}");
+      const todayIso = "{{ today_iso }}";
+
+      if (getEnvironmentEl) {
+        getEnvironmentEl.addEventListener("change", function () {
+          if (getDisciplineEl) getDisciplineEl.value = "";
+          getForm.submit();
+        });
+      }
+
+      if (getEnvironmentEl && postEnvironmentEl) postEnvironmentEl.value = getEnvironmentEl.value;
+      if (getDisciplineEl && postDisciplineEl) postDisciplineEl.value = getDisciplineEl.value;
+
+      function updateRowNumbers() {
+        body.querySelectorAll(".environment-item-row").forEach(function (row, index) {
+          const numberCell = row.querySelector("td");
+          if (numberCell) numberCell.textContent = String(index + 1);
+        });
+      }
+
+      function bindRemove(button) {
+        button.addEventListener("click", function () {
+          const row = button.closest("tr");
+          const deleteInput = row.querySelector("input[type='checkbox'][name$='-DELETE']");
+          if (deleteInput) deleteInput.checked = true;
+          row.style.display = "none";
+        });
+      }
+
+      function addRow() {
+        const index = Number(totalForms.value || "0");
+        const html = template.innerHTML
+          .replaceAll("__prefix__", String(index))
+          .replaceAll("__row_number__", String(index + 1));
+        body.insertAdjacentHTML("beforeend", html);
+        totalForms.value = String(index + 1);
+        bindRemove(body.querySelector(".environment-item-row:last-child .remove-row"));
+      }
+
+      function syncTodayOption() {
+        if (!applicationDateEl || !useTodayEl) return;
+        if (useTodayEl.checked) {
+          applicationDateEl.value = todayIso;
+          applicationDateEl.readOnly = true;
+        } else {
+          applicationDateEl.readOnly = false;
+        }
+      }
+
+      body.querySelectorAll(".remove-row").forEach(bindRemove);
+      if (addButton) addButton.addEventListener("click", addRow);
+      if (useTodayEl) useTodayEl.addEventListener("change", syncTodayOption);
+      syncTodayOption();
+      updateRowNumbers();
+    })();
+  </script>
+{% endblock %}

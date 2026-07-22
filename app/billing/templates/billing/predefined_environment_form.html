@@ -1,0 +1,17 @@
+{% extends "billing/base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  <p class="muted">{{ project.name }}</p>
+
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <div class="actions">
+      <a href="{% url 'billing:predefined_environment_list' project.id %}">Cancelar</a>
+      <button type="submit">Salvar</button>
+    </div>
+  </form>
+{% endblock %}

@@ -4,6 +4,7 @@ from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Count
 from django.db.models import Max
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -14,9 +15,13 @@ from billing.forms import (
     BulkContractedLineItemFormSet,
     ContractedLineAddForm,
     ContractedLineEditForm,
+    EnvironmentMaterialApplicationForm,
     ExtraLineForm,
     MeasurementLineHistoryEditForm,
     MeasurementPeriodForm,
+    PredefinedEnvironmentDisciplineForm,
+    PredefinedEnvironmentForm,
+    PredefinedEnvironmentMaterialForm,
     SettlementForm,
 )
 from billing.models import (
@@ -24,6 +29,9 @@ from billing.models import (
     MeasurementLineHistory,
     MeasurementLineKind,
     MeasurementPeriod,
+    PredefinedEnvironment,
+    PredefinedEnvironmentDiscipline,
+    PredefinedEnvironmentMaterial,
     WorkflowStatus,
 )
 from billing.services.measurement_lines import (
@@ -168,6 +176,195 @@ def project_detail_view(request, project_id: int):
             "sienge_template_error": sienge_template_error,
         },
     )
+
+
+@staff_member_required
+def predefined_environment_list_view(request, project_id: int):
+    project = get_object_or_404(Project, pk=project_id)
+    environments = (
+        PredefinedEnvironment.objects.filter(project=project)
+        .annotate(
+            discipline_count=Count("disciplines", distinct=True),
+            material_count=Count("disciplines__materials", distinct=True),
+        )
+        .order_by("name")
+    )
+    return render(
+        request,
+        "billing/predefined_environment_list.html",
+        {
+            "project": project,
+            "environments": environments,
+        },
+    )
+
+
+@staff_member_required
+def predefined_environment_create_view(request, project_id: int):
+    project = get_object_or_404(Project, pk=project_id)
+    if request.method == "POST":
+        form = PredefinedEnvironmentForm(request.POST, project=project)
+        if form.is_valid():
+            environment = form.save()
+            messages.success(request, "O ambiente predefinido foi cadastrado com sucesso.")
+            return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+    else:
+        form = PredefinedEnvironmentForm(project=project)
+
+    return render(
+        request,
+        "billing/predefined_environment_form.html",
+        {
+            "project": project,
+            "form": form,
+            "title": "Novo ambiente predefinido",
+        },
+    )
+
+
+@staff_member_required
+def predefined_environment_edit_view(request, environment_id: int):
+    environment = get_object_or_404(PredefinedEnvironment.objects.select_related("project"), pk=environment_id)
+    if request.method == "POST":
+        form = PredefinedEnvironmentForm(request.POST, instance=environment, project=environment.project)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Ambiente predefinido atualizado.")
+            return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+    else:
+        form = PredefinedEnvironmentForm(instance=environment, project=environment.project)
+
+    return render(
+        request,
+        "billing/predefined_environment_form.html",
+        {
+            "project": environment.project,
+            "environment": environment,
+            "form": form,
+            "title": "Editar ambiente predefinido",
+        },
+    )
+
+
+@staff_member_required
+def predefined_environment_detail_view(request, environment_id: int):
+    environment = get_object_or_404(
+        PredefinedEnvironment.objects.select_related("project").prefetch_related(
+            "disciplines__discipline",
+            "disciplines__materials__item",
+            "disciplines__materials__item__unit",
+        ),
+        pk=environment_id,
+    )
+    discipline_form = PredefinedEnvironmentDisciplineForm(environment=environment)
+    material_forms: dict[int, PredefinedEnvironmentMaterialForm] = {}
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "add_discipline":
+            discipline_form = PredefinedEnvironmentDisciplineForm(request.POST, environment=environment)
+            if discipline_form.is_valid():
+                discipline_form.save()
+                messages.success(request, "Disciplina adicionada ao ambiente.")
+                return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+        elif action == "add_material":
+            discipline = get_object_or_404(
+                PredefinedEnvironmentDiscipline.objects.select_related("environment"),
+                pk=request.POST.get("environment_discipline_id"),
+                environment=environment,
+            )
+            material_form = PredefinedEnvironmentMaterialForm(request.POST, environment_discipline=discipline)
+            material_forms[discipline.id] = material_form
+            if material_form.is_valid():
+                material_form.save()
+                messages.success(request, "Material padrao adicionado.")
+                return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+        elif action == "toggle_discipline":
+            discipline = get_object_or_404(
+                PredefinedEnvironmentDiscipline,
+                pk=request.POST.get("environment_discipline_id"),
+                environment=environment,
+            )
+            discipline.is_active = not discipline.is_active
+            discipline.save(update_fields=["is_active", "updated_at"])
+            messages.success(request, "Status da disciplina atualizado.")
+            return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+        elif action == "toggle_material":
+            material = get_object_or_404(
+                PredefinedEnvironmentMaterial.objects.select_related("environment_discipline"),
+                pk=request.POST.get("material_id"),
+                environment_discipline__environment=environment,
+            )
+            material.is_active = not material.is_active
+            material.save(update_fields=["is_active", "updated_at"])
+            messages.success(request, "Status do material padrao atualizado.")
+            return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+
+    disciplines = list(environment.disciplines.select_related("discipline").prefetch_related("materials__item__unit"))
+    discipline_sections = []
+    for discipline in disciplines:
+        material_forms.setdefault(
+            discipline.id,
+            PredefinedEnvironmentMaterialForm(environment_discipline=discipline),
+        )
+        discipline_sections.append({"discipline": discipline, "material_form": material_forms[discipline.id]})
+
+    return render(
+        request,
+        "billing/predefined_environment_detail.html",
+        {
+            "environment": environment,
+            "project": environment.project,
+            "discipline_sections": discipline_sections,
+            "discipline_form": discipline_form,
+        },
+    )
+
+
+@staff_member_required
+def predefined_environment_duplicate_view(request, environment_id: int):
+    environment = get_object_or_404(
+        PredefinedEnvironment.objects.select_related("project").prefetch_related("disciplines__materials"),
+        pk=environment_id,
+    )
+    if request.method != "POST":
+        messages.error(request, "Acao invalida para duplicar ambiente.")
+        return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+
+    new_name = (request.POST.get("name") or "").strip()
+    if not new_name:
+        messages.error(request, "Informe o nome do novo ambiente.")
+        return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+
+    try:
+        with transaction.atomic():
+            copy = PredefinedEnvironment.objects.create(
+                project=environment.project,
+                name=new_name,
+                description=environment.description,
+                is_active=environment.is_active,
+            )
+            for discipline in environment.disciplines.all():
+                discipline_copy = PredefinedEnvironmentDiscipline.objects.create(
+                    environment=copy,
+                    discipline=discipline.discipline,
+                    is_active=discipline.is_active,
+                )
+                for material in discipline.materials.all():
+                    PredefinedEnvironmentMaterial.objects.create(
+                        environment_discipline=discipline_copy,
+                        item=material.item,
+                        default_quantity=material.default_quantity,
+                        order_index=material.order_index,
+                        is_active=material.is_active,
+                    )
+    except ValidationError as exc:
+        for message in exc.messages:
+            messages.error(request, message)
+        return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+
+    messages.success(request, "Ambiente duplicado com sucesso.")
+    return redirect("billing:predefined_environment_detail", environment_id=copy.id)
 
 
 @staff_member_required
@@ -420,6 +617,17 @@ def measurement_detail_view(request, measurement_id: int):
     contracted_item_additional_materials = _build_additional_materials_map(
         contracted_form.fields["item"].queryset
     )
+    has_active_predefined_environments = (
+        PredefinedEnvironment.objects.filter(
+            project=period.project,
+            is_active=True,
+            disciplines__is_active=True,
+            disciplines__materials__is_active=True,
+            disciplines__materials__item__is_active=True,
+        )
+        .distinct()
+        .exists()
+    )
 
     settlements = period.settlements.order_by("event_date", "id")
     workflow_history = period.workflow_history.select_related("changed_by").all()
@@ -462,6 +670,7 @@ def measurement_detail_view(request, measurement_id: int):
             "contracted_line_stats": contracted_line_stats,
             "contracted_item_balances": contracted_item_balances,
             "contracted_item_additional_materials": contracted_item_additional_materials,
+            "has_active_predefined_environments": has_active_predefined_environments,
             "extra_lines": extra_lines,
             "settlements": settlements,
             "workflow_history": workflow_history,
@@ -520,6 +729,118 @@ def measurement_bulk_materials_add_view(request, measurement_id: int):
     return render(
         request,
         "billing/measurement_bulk_materials_form.html",
+        {
+            "period": period,
+            "common_form": common_form,
+            "item_formset": item_formset,
+            "today_iso": timezone.localdate().isoformat(),
+        },
+    )
+
+
+@staff_member_required
+def measurement_environment_materials_add_view(request, measurement_id: int):
+    period = get_object_or_404(MeasurementPeriod.objects.select_related("project"), pk=measurement_id)
+
+    if period.workflow_status != WorkflowStatus.DRAFT:
+        messages.error(request, "Periodo nao esta em DRAFT.")
+        return redirect("billing:measurement_detail", measurement_id=period.id)
+
+    selected_environment = None
+    selected_discipline = None
+    initial_items = []
+
+    if request.method == "POST":
+        common_form = EnvironmentMaterialApplicationForm(request.POST, period=period, prefix="env")
+        item_formset = BulkContractedLineItemFormSet(request.POST, period=period, prefix="items")
+        if common_form.is_valid() and item_formset.is_valid():
+            environment = common_form.cleaned_data["environment"]
+            discipline = common_form.cleaned_data["environment_discipline"]
+            try:
+                with transaction.atomic():
+                    if not PredefinedEnvironmentDiscipline.objects.filter(
+                        pk=discipline.pk,
+                        environment=environment,
+                        environment__project=period.project,
+                        environment__is_active=True,
+                        is_active=True,
+                        materials__is_active=True,
+                    ).exists():
+                        raise ValidationError("O padrao selecionado foi alterado. Carregue os materiais novamente.")
+
+                    created_count = 0
+                    for item_form in item_formset.valid_item_forms():
+                        add_or_merge_contracted_line(
+                            period=period,
+                            item=item_form.cleaned_data["item"],
+                            location=common_form.cleaned_data.get("location"),
+                            qty_period=item_form.cleaned_data["qty_period"],
+                            application_date=common_form.cleaned_data.get("application_date"),
+                            application_reference=common_form.cleaned_data.get("application_reference", ""),
+                            note=common_form.cleaned_data.get("note", ""),
+                            excess_justification=common_form.cleaned_data.get("excess_justification", ""),
+                            use_additional_materials=False,
+                            created_by=request.user,
+                        )
+                        created_count += 1
+            except ValidationError as exc:
+                for message in exc.messages:
+                    messages.error(request, message)
+            else:
+                if created_count == 1:
+                    messages.success(request, f"1 material do ambiente {environment.name} foi adicionado a medicao.")
+                else:
+                    messages.success(
+                        request,
+                        (
+                            f"{created_count} materiais do ambiente {environment.name}, "
+                            f"disciplina {discipline.discipline.name}, foram adicionados a medicao."
+                        ),
+                    )
+                return redirect("billing:measurement_detail", measurement_id=period.id)
+    else:
+        environment_id = request.GET.get("environment") or request.GET.get("env-environment")
+        discipline_id = request.GET.get("environment_discipline") or request.GET.get("env-environment_discipline")
+        if environment_id:
+            selected_environment = (
+                PredefinedEnvironment.objects.filter(
+                    pk=environment_id,
+                    project=period.project,
+                    is_active=True,
+                )
+                .first()
+            )
+        if selected_environment and discipline_id:
+            selected_discipline = (
+                PredefinedEnvironmentDiscipline.objects.filter(
+                    pk=discipline_id,
+                    environment=selected_environment,
+                    is_active=True,
+                )
+                .first()
+            )
+
+        initial = {}
+        if selected_environment:
+            initial["environment"] = selected_environment
+            initial["application_reference"] = selected_environment.name
+        if selected_discipline:
+            initial["environment_discipline"] = selected_discipline
+            initial_items = [
+                {
+                    "item": material.item,
+                    "qty_period": material.default_quantity,
+                }
+                for material in selected_discipline.materials.select_related("item")
+                .filter(is_active=True, item__is_active=True)
+                .order_by("order_index", "item__eap_code", "id")
+            ]
+        common_form = EnvironmentMaterialApplicationForm(period=period, prefix="env", initial=initial)
+        item_formset = BulkContractedLineItemFormSet(period=period, prefix="items", initial=initial_items)
+
+    return render(
+        request,
+        "billing/measurement_environment_materials_form.html",
         {
             "period": period,
             "common_form": common_form,

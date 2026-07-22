@@ -372,6 +372,128 @@ class MeasurementLineHistory(models.Model):
         super().save(*args, **kwargs)
 
 
+class PredefinedEnvironment(models.Model):
+    project = models.ForeignKey(
+        "core.Project",
+        on_delete=models.CASCADE,
+        related_name="predefined_environments",
+    )
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["project", "name"], name="uniq_predef_env_project_name"),
+        ]
+        ordering = ["project_id", "name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+    def clean(self):
+        super().clean()
+        self.name = " ".join((self.name or "").strip().split())
+        if not self.project_id or not self.name:
+            return
+
+        normalized_name = self.name.casefold()
+        duplicate_qs = PredefinedEnvironment.objects.filter(project_id=self.project_id).exclude(pk=self.pk)
+        if any(" ".join(env.name.strip().split()).casefold() == normalized_name for env in duplicate_qs):
+            raise ValidationError("Ja existe um ambiente predefinido com este nome nesta obra.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class PredefinedEnvironmentDiscipline(models.Model):
+    environment = models.ForeignKey(
+        "billing.PredefinedEnvironment",
+        on_delete=models.CASCADE,
+        related_name="disciplines",
+    )
+    discipline = models.ForeignKey(
+        "catalog.Discipline",
+        on_delete=models.PROTECT,
+        related_name="predefined_environment_disciplines",
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["environment", "discipline"],
+                name="uniq_predef_env_discipline",
+            ),
+        ]
+        ordering = ["environment_id", "discipline__name", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.environment} - {self.discipline}"
+
+    def clean(self):
+        super().clean()
+        if self.discipline_id and not self.discipline.is_active:
+            raise ValidationError("A disciplina selecionada esta inativa.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class PredefinedEnvironmentMaterial(models.Model):
+    environment_discipline = models.ForeignKey(
+        "billing.PredefinedEnvironmentDiscipline",
+        on_delete=models.CASCADE,
+        related_name="materials",
+    )
+    item = models.ForeignKey(
+        "catalog.BudgetItem",
+        on_delete=models.PROTECT,
+        related_name="predefined_environment_materials",
+    )
+    default_quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    order_index = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["environment_discipline", "item"],
+                name="uniq_predef_env_material_item",
+            ),
+        ]
+        ordering = ["environment_discipline_id", "order_index", "item__eap_code", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.environment_discipline} - {self.item}"
+
+    def clean(self):
+        super().clean()
+        if self.default_quantity is None or self.default_quantity <= 0:
+            raise ValidationError("A quantidade padrao deve ser maior que zero.")
+
+        if not self.environment_discipline_id or not self.item_id:
+            return
+
+        project_id = self.environment_discipline.environment.project_id
+        if self.item.project_id != project_id:
+            raise ValidationError("O material padrao deve pertencer a mesma obra do ambiente.")
+        if not self.item.is_active:
+            raise ValidationError("O material selecionado esta inativo.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
 class MeasurementSettlement(models.Model):
     period = models.ForeignKey(
         "billing.MeasurementPeriod", on_delete=models.CASCADE, related_name="settlements"

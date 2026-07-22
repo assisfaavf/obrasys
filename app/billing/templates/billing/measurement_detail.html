@@ -304,7 +304,11 @@
     {% if is_draft %}
       <h3>Adicionar linha contratada</h3>
       <p class="actions">
+        <span>Adicionar material</span>
         <a href="{% url 'billing:measurement_bulk_materials_add' period.id %}">Adicionar varios materiais</a>
+        {% if has_active_predefined_environments %}
+          <a href="{% url 'billing:measurement_environment_materials_add' period.id %}">Adicionar materiais por ambiente</a>
+        {% endif %}
       </p>
       <form method="post">
         {% csrf_token %}

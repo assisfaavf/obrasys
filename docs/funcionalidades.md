@@ -30,6 +30,11 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - Cada item do lote recebe sua propria quantidade e gera um registro separado.
 - O lote reaproveita o mesmo fluxo de criacao das linhas contratadas individuais, incluindo historico, consolidacao com linha existente e recalculo de materiais adicionais.
 - Itens duplicados no mesmo envio em lote sao bloqueados para evitar soma silenciosa dentro do formulario.
+- Ambientes predefinidos por obra permitem cadastrar disciplinas e materiais padrao com quantidades.
+- A medicao pode adicionar materiais por ambiente, carregando uma copia editavel dos materiais padrao.
+- A aplicacao por ambiente preserva localizacao, referencia da aplicacao, data e notas como campos compartilhados.
+- Materiais removidos ou extras na aplicacao nao alteram o ambiente predefinido original.
+- Linhas de medicao com a mesma obra, item e local sao consolidadas apenas quando a referencia da aplicacao tambem e igual.
 
 ## Carga Inicial de Materiais e Estoque
 

@@ -18,6 +18,9 @@ from billing.models import (
     MeasurementPeriod,
     MeasurementSettlement,
     MeasurementWorkflowHistory,
+    PredefinedEnvironment,
+    PredefinedEnvironmentDiscipline,
+    PredefinedEnvironmentMaterial,
     WorkflowStatus,
 )
 from billing.services.measurement_calc import (
@@ -27,7 +30,7 @@ from billing.services.measurement_calc import (
     update_financial_status,
 )
 from billing.services.workflow import transition_measurement_status
-from catalog.models import BudgetItem, Unit
+from catalog.models import BudgetItem, Discipline, Unit
 from core.models import Client, Project, ProjectLocation
 from pricing.models import PriceIndex, PriceIndexValue, ProjectPriceAdjustment
 
@@ -602,6 +605,7 @@ class MeasurementBulkMaterialsTests(TestCase):
             item=self.item_a,
             location=self.location,
             qty_period=Decimal("1"),
+            application_reference="Banheiro Casal - 301",
         )
         self.client.login(username="bulk-admin", password="test")
 
@@ -646,6 +650,302 @@ class MeasurementBulkMaterialsTests(TestCase):
         }
         for index, (item, quantity) in enumerate(rows):
             data[f"items-{index}-item"] = "" if item is None else str(item.id)
+            data[f"items-{index}-qty_period"] = quantity
+            if index in deleted_indexes:
+                data[f"items-{index}-DELETE"] = "on"
+        return data
+
+
+class PredefinedEnvironmentMaterialsTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_superuser(
+            username="environment-admin",
+            email="environment-admin@example.com",
+            password="test",
+        )
+        self.regular_user = get_user_model().objects.create_user(username="environment-user", password="test")
+        self.client_obj = Client.objects.create(name="Cliente Ambiente")
+        self.project = Project.objects.create(name="Projeto Ambiente", client=self.client_obj)
+        self.other_project = Project.objects.create(name="Outra Obra", client=self.client_obj)
+        self.unit = Unit.objects.create(code="UN-ENV", name="Unidade ambiente")
+        self.discipline = Discipline.objects.create(name="Instalacoes sanitarias", code="SAN")
+        self.other_discipline = Discipline.objects.create(name="Agua fria", code="AF")
+        self.location = ProjectLocation.objects.create(
+            project=self.project,
+            code="PAV-TIPO",
+            name="Pavimento tipo",
+            order_index=1,
+        )
+        self.period = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=1,
+            ref_month=date(2026, 7, 1),
+            start_date=date(2026, 7, 1),
+            end_date=date(2026, 7, 31),
+        )
+        self.item_a = self._create_item("1.1", "Tubo PVC 100mm")
+        self.item_b = self._create_item("1.2", "Joelho PVC 100mm")
+        self.item_c = self._create_item("1.3", "Luva PVC 50mm")
+        self.foreign_item = BudgetItem.objects.create(
+            project=self.other_project,
+            eap_code="9.1",
+            description="Item outra obra",
+            unit=self.unit,
+            qty_contracted=Decimal("100"),
+            pu_material=Decimal("1"),
+            pu_labor=Decimal("1"),
+        )
+        self.environment = PredefinedEnvironment.objects.create(
+            project=self.project,
+            name="Banheiro Casal",
+            description="Padrao banheiro casal",
+        )
+        self.environment_discipline = PredefinedEnvironmentDiscipline.objects.create(
+            environment=self.environment,
+            discipline=self.discipline,
+        )
+        self.material_a = PredefinedEnvironmentMaterial.objects.create(
+            environment_discipline=self.environment_discipline,
+            item=self.item_a,
+            default_quantity=Decimal("2"),
+            order_index=1,
+        )
+        self.material_b = PredefinedEnvironmentMaterial.objects.create(
+            environment_discipline=self.environment_discipline,
+            item=self.item_b,
+            default_quantity=Decimal("4"),
+            order_index=2,
+        )
+
+    def test_create_environment_validates_project_scope_and_duplicate_name(self):
+        duplicated = PredefinedEnvironment(project=self.project, name="  banheiro   casal ")
+
+        with self.assertRaises(ValidationError):
+            duplicated.save()
+
+        other_project_environment = PredefinedEnvironment.objects.create(
+            project=self.other_project,
+            name="Banheiro Casal",
+        )
+        self.assertEqual(other_project_environment.name, "Banheiro Casal")
+
+    def test_discipline_and_material_validations_block_duplicates_and_foreign_item(self):
+        with self.assertRaises(ValidationError):
+            PredefinedEnvironmentDiscipline.objects.create(
+                environment=self.environment,
+                discipline=self.discipline,
+            )
+
+        with self.assertRaises(ValidationError):
+            PredefinedEnvironmentMaterial.objects.create(
+                environment_discipline=self.environment_discipline,
+                item=self.item_a,
+                default_quantity=Decimal("1"),
+            )
+
+        with self.assertRaises(ValidationError):
+            PredefinedEnvironmentMaterial.objects.create(
+                environment_discipline=self.environment_discipline,
+                item=self.foreign_item,
+                default_quantity=Decimal("1"),
+            )
+
+        with self.assertRaises(ValidationError):
+            PredefinedEnvironmentMaterial.objects.create(
+                environment_discipline=self.environment_discipline,
+                item=self.item_c,
+                default_quantity=Decimal("0"),
+            )
+
+    def test_authorized_user_can_access_environment_application_page(self):
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.get(reverse("billing:measurement_environment_materials_add", args=[self.period.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Adicionar materiais por ambiente")
+        self.assertContains(response, "Banheiro Casal")
+
+    def test_anonymous_user_is_redirected_from_environment_application_page(self):
+        response = self.client.get(reverse("billing:measurement_environment_materials_add", args=[self.period.id]))
+
+        self.assertEqual(response.status_code, 302)
+
+    def test_non_staff_user_cannot_apply_environment_materials(self):
+        self.client.login(username="environment-user", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_environment_materials_add", args=[self.period.id]),
+            self._application_post_data([(self.item_a, "1")]),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_locked_measurement_blocks_environment_application(self):
+        self.period.workflow_status = WorkflowStatus.FINALIZED
+        self.period.save(update_fields=["workflow_status"])
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_environment_materials_add", args=[self.period.id]),
+            self._application_post_data([(self.item_a, "1")]),
+        )
+
+        self.assertRedirects(response, reverse("billing:measurement_detail", args=[self.period.id]))
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_get_loads_default_materials_for_selected_environment_discipline(self):
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.get(
+            reverse("billing:measurement_environment_materials_add", args=[self.period.id]),
+            {
+                "environment": str(self.environment.id),
+                "environment_discipline": str(self.environment_discipline.id),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "value=\"2.000\"")
+        self.assertContains(response, "value=\"4.000\"")
+
+    def test_apply_environment_materials_uses_adjusted_quantities_and_preserves_pattern(self):
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_environment_materials_add", args=[self.period.id]),
+            self._application_post_data(
+                [(self.item_a, "1.5"), (self.item_b, "5")],
+                note="Ajuste proximo ao shaft",
+            ),
+        )
+
+        self.assertRedirects(response, reverse("billing:measurement_detail", args=[self.period.id]))
+        self.material_a.refresh_from_db()
+        self.material_b.refresh_from_db()
+        self.assertEqual(self.material_a.default_quantity, Decimal("2.000"))
+        self.assertEqual(self.material_b.default_quantity, Decimal("4.000"))
+        lines = list(MeasurementLine.objects.order_by("item__eap_code"))
+        self.assertEqual([line.qty_period for line in lines], [Decimal("1.500"), Decimal("5.000")])
+        self.assertEqual({line.location for line in lines}, {self.location})
+        self.assertEqual({line.application_reference for line in lines}, {"Banheiro Casal - apartamento 301"})
+        self.assertEqual({line.note for line in lines}, {"Ajuste proximo ao shaft"})
+
+    def test_removed_default_material_is_not_created_and_pattern_is_preserved(self):
+        self.client.login(username="environment-admin", password="test")
+
+        self.client.post(
+            reverse("billing:measurement_environment_materials_add", args=[self.period.id]),
+            self._application_post_data([(self.item_a, "1"), (self.item_b, "2")], deleted_indexes={1}),
+        )
+
+        line = MeasurementLine.objects.get()
+        self.assertEqual(line.item, self.item_a)
+        self.assertTrue(PredefinedEnvironmentMaterial.objects.filter(pk=self.material_b.pk).exists())
+
+    def test_extra_material_is_created_only_in_measurement(self):
+        self.client.login(username="environment-admin", password="test")
+
+        self.client.post(
+            reverse("billing:measurement_environment_materials_add", args=[self.period.id]),
+            self._application_post_data([(self.item_a, "1"), (self.item_b, "2"), (self.item_c, "3")]),
+        )
+
+        self.assertEqual(MeasurementLine.objects.count(), 3)
+        self.assertFalse(
+            PredefinedEnvironmentMaterial.objects.filter(
+                environment_discipline=self.environment_discipline,
+                item=self.item_c,
+            ).exists()
+        )
+
+    def test_duplicate_item_in_application_blocks_all_lines(self):
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_environment_materials_add", args=[self.period.id]),
+            self._application_post_data([(self.item_a, "1"), (self.item_a, "2")]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Ha itens duplicados no cadastro em lote.")
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_empty_application_blocks_all_lines(self):
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:measurement_environment_materials_add", args=[self.period.id]),
+            self._application_post_data([(self.item_a, "1")], deleted_indexes={0}),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Informe pelo menos um item para cadastrar.")
+        self.assertFalse(MeasurementLine.objects.exists())
+
+    def test_inactive_environment_is_not_available_for_application(self):
+        self.environment.is_active = False
+        self.environment.save(update_fields=["is_active"])
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.get(reverse("billing:measurement_environment_materials_add", args=[self.period.id]))
+
+        self.assertNotContains(response, "Banheiro Casal</option>")
+
+    def test_applying_same_pattern_to_different_references_creates_independent_lines(self):
+        self.client.login(username="environment-admin", password="test")
+
+        self.client.post(
+            reverse("billing:measurement_environment_materials_add", args=[self.period.id]),
+            self._application_post_data([(self.item_a, "1")], application_reference="Banheiro Casal - 301"),
+        )
+        self.client.post(
+            reverse("billing:measurement_environment_materials_add", args=[self.period.id]),
+            self._application_post_data([(self.item_a, "2")], application_reference="Banheiro Casal - 302"),
+        )
+
+        lines = list(MeasurementLine.objects.order_by("application_reference"))
+        self.assertEqual(len(lines), 2)
+        self.assertEqual([line.application_reference for line in lines], ["Banheiro Casal - 301", "Banheiro Casal - 302"])
+        self.assertEqual([line.qty_period for line in lines], [Decimal("1.000"), Decimal("2.000")])
+
+    def _create_item(self, eap_code: str, description: str) -> BudgetItem:
+        return BudgetItem.objects.create(
+            project=self.project,
+            eap_code=eap_code,
+            description=description,
+            unit=self.unit,
+            qty_contracted=Decimal("100"),
+            pu_material=Decimal("1"),
+            pu_labor=Decimal("1"),
+            discipline=self.discipline,
+        )
+
+    def _application_post_data(
+        self,
+        rows,
+        *,
+        note: str = "Notas por ambiente",
+        application_reference: str = "Banheiro Casal - apartamento 301",
+        deleted_indexes: set[int] | None = None,
+    ) -> dict:
+        deleted_indexes = deleted_indexes or set()
+        data = {
+            "env-environment": str(self.environment.id),
+            "env-environment_discipline": str(self.environment_discipline.id),
+            "env-location": str(self.location.id),
+            "env-application_reference": application_reference,
+            "env-application_date": "2026-07-20",
+            "env-note": note,
+            "env-excess_justification": "",
+            "items-TOTAL_FORMS": str(len(rows)),
+            "items-INITIAL_FORMS": "0",
+            "items-MIN_NUM_FORMS": "0",
+            "items-MAX_NUM_FORMS": "1000",
+        }
+        for index, (item, quantity) in enumerate(rows):
+            data[f"items-{index}-item"] = str(item.id)
             data[f"items-{index}-qty_period"] = quantity
             if index in deleted_indexes:
                 data[f"items-{index}-DELETE"] = "on"

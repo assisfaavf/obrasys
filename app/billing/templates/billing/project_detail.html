@@ -8,6 +8,7 @@
 
   <div class="actions">
     <a href="{% url 'billing:measurement_new' project.id %}">Nova medicao</a>
+    <a href="{% url 'billing:predefined_environment_list' project.id %}">Ambientes predefinidos</a>
     <a href="{% url 'rdo:project_rdo_list' project.id %}">RDO / Diario de Obras</a>
     <a href="{% url 'rdo:work_order' project.id %}">Livro de Ordem</a>
     {% if sienge_template_available %}
