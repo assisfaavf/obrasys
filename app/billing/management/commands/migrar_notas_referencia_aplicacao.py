@@ -23,6 +23,12 @@ REFERENCE_START_RE = re.compile(
     r"banheiro|cozinha|suite|su[i\u00ed]te|shaft|lavanderia|area|[a\u00e1]rea|casa|sala|loja|quarto|prumada|hall|varanda"
     r")\b"
 )
+REFERENCE_WITHOUT_SEPARATOR_RE = re.compile(
+    r"(?i)^(?P<place>"
+    r"(?:banheiro|cozinha|suite|su[i\u00ed]te|shaft|lavanderia|area|[a\u00e1]rea|casa|sala|loja|quarto|prumada|hall|varanda)"
+    r"(?:\s+[a-z0-9]+){0,4}"
+    r")\s+(?P<number>\d{1,4}[a-z]?)$"
+)
 ACTION_WORD_RE = re.compile(
     r"(?i)\b("
     r"trocar|substitu[i\u00ed]d[oa]|danificado|aplicad[oa]|parcial|falta|concluir|verificar|alterar|ajustad[oa]|trajeto"
@@ -38,6 +44,7 @@ class Candidate:
     reason: str
     note: str
     suggested_reference: str = ""
+    remaining_note: str | None = None
 
 
 class Command(BaseCommand):
@@ -64,7 +71,7 @@ class Command(BaseCommand):
                     if candidate.status != "migrar":
                         continue
                     candidate.obj.application_reference = candidate.suggested_reference
-                    candidate.obj.note = ""
+                    candidate.obj.note = candidate.remaining_note if candidate.remaining_note is not None else ""
                     candidate.obj.save(update_fields=["application_reference", "note"])
 
         self._print_summary(candidates, apply_changes=apply_changes, export_csv=export_csv)
@@ -93,6 +100,10 @@ class Command(BaseCommand):
             return Candidate(source, obj, "referencia_existente", "Referencia ja preenchida.", note)
 
         normalized = _normalize_reference(note)
+        without_separator = self._classify_without_separator(source, obj, normalized)
+        if without_separator is not None:
+            return without_separator
+
         separator_count = len(re.findall(r"[-\u2013\u2014]", normalized))
         if separator_count != 1:
             return Candidate(source, obj, "preservar", "Sem separador unico de referencia.", note)
@@ -108,6 +119,36 @@ class Command(BaseCommand):
             return Candidate(source, obj, "ambiguo", "Final nao parece identificador seguro.", note)
 
         return Candidate(source, obj, "migrar", "Referencia segura.", note, normalized)
+
+    def _classify_without_separator(self, source: str, obj, note: str) -> Candidate | None:
+        segments = [segment.strip() for segment in note.split("|")]
+        matches: list[tuple[int, str]] = []
+        for index, segment in enumerate(segments):
+            match = REFERENCE_WITHOUT_SEPARATOR_RE.match(_normalize_reference(segment))
+            if not match:
+                continue
+            matches.append((index, _format_apartment_reference(match.group("place"), match.group("number"))))
+
+        unique_references = {reference for _, reference in matches}
+        if len(unique_references) != 1:
+            return None
+
+        matched_indexes = {index for index, _ in matches}
+        reference = matches[0][1]
+        remaining_segments = [
+            segment.strip()
+            for index, segment in enumerate(segments)
+            if index not in matched_indexes and segment.strip()
+        ]
+        return Candidate(
+            source,
+            obj,
+            "migrar",
+            "Referencia sem separador identificada.",
+            note,
+            reference,
+            " | ".join(remaining_segments),
+        )
 
     def _export_csv(self, path: Path, candidates: list[Candidate]) -> None:
         try:
@@ -175,3 +216,8 @@ def _normalize_reference(value: str) -> str:
     value = " ".join((value or "").strip().split())
     value = re.sub(r"\s*([-\u2013\u2014])\s*", r" \1 ", value)
     return " ".join(value.split())
+
+
+def _format_apartment_reference(place: str, apartment: str) -> str:
+    normalized_place = _normalize_reference(place).title()
+    return f"{normalized_place} - apartamento {apartment}"

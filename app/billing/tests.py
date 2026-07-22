@@ -742,6 +742,33 @@ class ApplicationReferenceMigrationCommandTests(TestCase):
         self.assertEqual(line_b.application_reference, "Banheiro Social \u2013 402")
         self.assertEqual(line_c.application_reference, "Cozinha \u2014 Apartamento 201")
 
+    def test_command_migrates_apartment_reference_without_separator(self):
+        line = self._line(note="Banheiro casal 301")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "Banheiro Casal - apartamento 301")
+        self.assertEqual(line.note, "")
+
+    def test_command_migrates_reference_segment_and_preserves_remaining_note(self):
+        line = self._line(note="Pias banheiro casal 302 | Banheiro Casal 301")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "Banheiro Casal - apartamento 301")
+        self.assertEqual(line.note, "Pias banheiro casal 302")
+
+    def test_command_migrates_duplicate_reference_segments(self):
+        line = self._line(note="Banheiro casal 301 | Banheiro Casal 301")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "Banheiro Casal - apartamento 301")
+        self.assertEqual(line.note, "")
+
     def test_command_preserves_action_note(self):
         line = self._line(note="Material danificado - trocar")
 
