@@ -66,7 +66,7 @@ class MeasurementPeriodForm(forms.ModelForm):
 class MeasurementLineForm(forms.ModelForm):
     class Meta:
         model = MeasurementLine
-        fields = ["item", "location", "qty_period", "excess_justification", "note"]
+        fields = ["item", "location", "qty_period", "excess_justification", "application_reference", "note"]
         widgets = {
             "excess_justification": forms.Textarea(attrs={"rows": 2}),
         }
@@ -84,6 +84,11 @@ class MeasurementLineForm(forms.ModelForm):
         self.fields["location"].required = False
         self.fields["excess_justification"].required = False
         self.fields["excess_justification"].label = "Justificativa do excedente"
+        self.fields["application_reference"].required = False
+        self.fields["application_reference"].label = "Referencia da aplicacao"
+        self.fields["application_reference"].help_text = (
+            "Informe a unidade, apartamento, comodo ou identificacao especifica da aplicacao."
+        )
         self.fields["note"].required = False
 
     def clean_qty_period(self):
@@ -141,7 +146,7 @@ class ContractedLineAddForm(forms.ModelForm):
 
     class Meta:
         model = MeasurementLine
-        fields = ["item", "location", "qty_period", "excess_justification", "note"]
+        fields = ["item", "location", "qty_period", "excess_justification", "application_reference", "note"]
         widgets = {
             "excess_justification": forms.Textarea(attrs={"rows": 2}),
         }
@@ -159,6 +164,11 @@ class ContractedLineAddForm(forms.ModelForm):
         self.fields["location"].required = False
         self.fields["excess_justification"].required = False
         self.fields["excess_justification"].label = "Justificativa do excedente"
+        self.fields["application_reference"].required = False
+        self.fields["application_reference"].label = "Referencia da aplicacao"
+        self.fields["application_reference"].help_text = (
+            "Informe a unidade, apartamento, comodo ou identificacao especifica da aplicacao."
+        )
         self.fields["note"].required = False
 
     def clean_qty_period(self):
@@ -210,6 +220,12 @@ class BulkContractedLineCommonForm(forms.Form):
         widget=forms.DateInput(attrs={"type": "date"}),
     )
     use_today = forms.BooleanField(required=False, label="Hoje")
+    application_reference = forms.CharField(
+        required=False,
+        label="Referencia da aplicacao",
+        max_length=150,
+        help_text="Ex.: Banheiro Casal - 301, Prumada A ou Banheiro PCD.",
+    )
     note = forms.CharField(
         required=False,
         label="Notas",
@@ -412,7 +428,7 @@ class MeasurementLineHistoryEditForm(forms.ModelForm):
 
     class Meta:
         model = MeasurementLineHistory
-        fields = ["quantity_added", "application_date", "note"]
+        fields = ["quantity_added", "application_date", "application_reference", "note"]
         widgets = {
             "application_date": forms.DateInput(attrs={"type": "date"}),
             "note": forms.Textarea(attrs={"rows": 2}),
@@ -420,6 +436,8 @@ class MeasurementLineHistoryEditForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields["application_reference"].required = False
+        self.fields["application_reference"].label = "Referencia da aplicacao"
         self.fields["note"].required = False
         if not self.is_bound:
             self.initial["uses_additional_materials"] = (

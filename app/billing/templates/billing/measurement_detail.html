@@ -265,7 +265,12 @@
           <tr>
             <td>{{ row.line.item.eap_code }}</td>
             <td>{{ row.line.item.description }}</td>
-            <td>{{ row.line.location.code|default:"-" }}</td>
+            <td>
+              {{ row.line.location.code|default:"-" }}
+              {% if row.line.application_reference %}
+                <br><span class="muted">{{ row.line.application_reference }}</span>
+              {% endif %}
+            </td>
             <td>{{ row.effective_qty|br_decimal:2 }}</td>
             <td>{{ row.previous|br_decimal:2 }}</td>
             <td>{{ row.accumulated|br_decimal:2 }}</td>
@@ -342,6 +347,12 @@
             <ul id="contracted-additional-materials-list"></ul>
           </div>
         </div>
+        <p>
+          {{ contracted_form.application_reference.label_tag }}
+          {{ contracted_form.application_reference }}
+          {{ contracted_form.application_reference.errors }}
+          <span class="muted">{{ contracted_form.application_reference.help_text }}</span>
+        </p>
         <div id="contracted-excess-inline" style="display:none;">
           <p class="errors" id="contracted-excess-msg"></p>
           <p>

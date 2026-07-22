@@ -2,9 +2,13 @@ from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.urls import reverse
+from io import StringIO
+from pathlib import Path
+import tempfile
 
 from billing.forms import MeasurementPeriodForm
 from billing.models import (
@@ -371,10 +375,12 @@ class MeasurementBulkMaterialsTests(TestCase):
         self.assertEqual([line.qty_period for line in lines], [Decimal("10.000"), Decimal("4.000"), Decimal("2.000")])
         self.assertEqual({line.location for line in lines}, {self.location})
         self.assertEqual({line.note for line in lines}, {"Material aplicado na prumada principal"})
+        self.assertEqual({line.application_reference for line in lines}, {"Banheiro Casal - 301"})
         histories = list(MeasurementLineHistory.objects.order_by("line__item__eap_code"))
         self.assertEqual(len(histories), 3)
         self.assertEqual({history.application_date for history in histories}, {date(2026, 7, 20)})
         self.assertEqual({history.created_by for history in histories}, {self.user})
+        self.assertEqual({history.application_reference for history in histories}, {"Banheiro Casal - 301"})
 
     def test_bulk_saves_different_quantities_per_item(self):
         self.client.login(username="bulk-admin", password="test")
@@ -526,6 +532,7 @@ class MeasurementBulkMaterialsTests(TestCase):
                 "contracted-location": str(self.location.id),
                 "contracted-qty_period": "2",
                 "contracted-application_date": "2026-07-20",
+                "contracted-application_reference": "Banheiro Social - 402",
                 "contracted-note": "individual",
                 "contracted-excess_justification": "",
             },
@@ -535,7 +542,58 @@ class MeasurementBulkMaterialsTests(TestCase):
         line = MeasurementLine.objects.get()
         self.assertEqual(line.item, self.item_a)
         self.assertEqual(line.qty_period, Decimal("2.000"))
+        self.assertEqual(line.application_reference, "Banheiro Social - 402")
         self.assertEqual(line.histories.get().note, "individual")
+        self.assertEqual(line.histories.get().application_reference, "Banheiro Social - 402")
+
+    def test_individual_line_edit_updates_and_removes_application_reference_without_changing_note(self):
+        line = MeasurementLine.objects.create(
+            period=self.period,
+            line_kind="CONTRACTED",
+            item=self.item_a,
+            location=self.location,
+            qty_period=Decimal("2"),
+            application_reference="Banheiro Casal - 301",
+            note="nota preservada",
+        )
+        MeasurementLineHistory.objects.create(
+            line=line,
+            quantity_added=Decimal("2"),
+            application_date=date(2026, 7, 20),
+            application_reference="Banheiro Casal - 301",
+            note="nota preservada",
+        )
+        self.client.login(username="bulk-admin", password="test")
+
+        self.client.post(
+            reverse("billing:line_edit", args=[line.id]),
+            {
+                "item": str(self.item_a.id),
+                "location": str(self.location.id),
+                "qty_period": "2",
+                "application_reference": "Prumada A",
+                "note": "nota preservada",
+                "excess_justification": "",
+            },
+        )
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "Prumada A")
+        self.assertEqual(line.note, "nota preservada")
+
+        self.client.post(
+            reverse("billing:line_edit", args=[line.id]),
+            {
+                "item": str(self.item_a.id),
+                "location": str(self.location.id),
+                "qty_period": "2",
+                "application_reference": "",
+                "note": "nota preservada",
+                "excess_justification": "",
+            },
+        )
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "")
+        self.assertEqual(line.note, "nota preservada")
 
     def test_bulk_merges_with_existing_line_like_individual_flow(self):
         MeasurementLine.objects.create(
@@ -578,6 +636,7 @@ class MeasurementBulkMaterialsTests(TestCase):
         data = {
             "bulk-location": str((location or self.location).id),
             "bulk-application_date": "2026-07-20",
+            "bulk-application_reference": "Banheiro Casal - 301",
             "bulk-note": note,
             "bulk-excess_justification": "",
             "items-TOTAL_FORMS": str(len(rows)),
@@ -591,6 +650,200 @@ class MeasurementBulkMaterialsTests(TestCase):
             if index in deleted_indexes:
                 data[f"items-{index}-DELETE"] = "on"
         return data
+
+
+class ApplicationReferenceMigrationCommandTests(TestCase):
+    def setUp(self):
+        self.client_obj = Client.objects.create(name="Cliente Referencia")
+        self.project = Project.objects.create(name="Projeto Referencia", client=self.client_obj)
+        self.unit = Unit.objects.create(code="UN-REF", name="Unidade referencia")
+        self.location = ProjectLocation.objects.create(
+            project=self.project,
+            code="PAV-TIPO",
+            name="Pavimento tipo",
+        )
+        self.period = MeasurementPeriod.objects.create(
+            project=self.project,
+            number=1,
+            ref_month=date(2026, 7, 1),
+            start_date=date(2026, 7, 1),
+            end_date=date(2026, 7, 31),
+        )
+        self.item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="1.1",
+            description="Tubo PVC",
+            unit=self.unit,
+            qty_contracted=Decimal("100"),
+            pu_material=Decimal("1"),
+            pu_labor=Decimal("1"),
+        )
+
+    def test_command_dry_run_does_not_change_reference_note(self):
+        line = self._line(note="Banheiro Casal - 301")
+
+        output = StringIO()
+        call_command("migrar_notas_referencia_aplicacao", "--dry-run", stdout=output)
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "")
+        self.assertEqual(line.note, "Banheiro Casal - 301")
+        self.assertIn("Referencias identificadas: 1", output.getvalue())
+
+    def test_command_apply_moves_safe_note_to_reference(self):
+        line = self._line(note="Banheiro Casal - 301")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "Banheiro Casal - 301")
+        self.assertEqual(line.note, "")
+
+    def test_command_preserves_descriptive_note(self):
+        note = "Foi necessario alterar o trajeto proximo ao banheiro do apartamento 301."
+        line = self._line(note=note)
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "")
+        self.assertEqual(line.note, note)
+
+    def test_command_keeps_ambiguous_reference_and_observation_note(self):
+        note = "Banheiro Casal - 301 - quantidade ajustada"
+        line = self._line(note=note)
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "")
+        self.assertEqual(line.note, note)
+
+    def test_command_does_not_overwrite_existing_reference(self):
+        line = self._line(note="Banheiro Casal - 301", application_reference="Banheiro Social - 201")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "Banheiro Social - 201")
+        self.assertEqual(line.note, "Banheiro Casal - 301")
+
+    def test_command_normalizes_spaces_and_separator_variants(self):
+        line_a = self._line(note="  Banheiro Casal   -   301  ")
+        line_b = self._line(note="Banheiro Social \u2013 402", eap_code="1.2")
+        line_c = self._line(note="Cozinha \u2014 Apartamento 201", eap_code="1.3")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line_a.refresh_from_db()
+        line_b.refresh_from_db()
+        line_c.refresh_from_db()
+        self.assertEqual(line_a.application_reference, "Banheiro Casal - 301")
+        self.assertEqual(line_b.application_reference, "Banheiro Social \u2013 402")
+        self.assertEqual(line_c.application_reference, "Cozinha \u2014 Apartamento 201")
+
+    def test_command_migrates_apartment_reference_without_separator(self):
+        line = self._line(note="Banheiro casal 301")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "Banheiro Casal - apartamento 301")
+        self.assertEqual(line.note, "")
+
+    def test_command_migrates_reference_segment_and_preserves_remaining_note(self):
+        line = self._line(note="Pias banheiro casal 302 | Banheiro Casal 301")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "Banheiro Casal - apartamento 301")
+        self.assertEqual(line.note, "Pias banheiro casal 302")
+
+    def test_command_migrates_duplicate_reference_segments(self):
+        line = self._line(note="Banheiro casal 301 | Banheiro Casal 301")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "Banheiro Casal - apartamento 301")
+        self.assertEqual(line.note, "")
+
+    def test_command_preserves_action_note(self):
+        line = self._line(note="Material danificado - trocar")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "")
+        self.assertEqual(line.note, "Material danificado - trocar")
+
+    def test_command_apply_is_idempotent(self):
+        line = self._line(note="Shaft - Prumada A")
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "Shaft - Prumada A")
+        self.assertEqual(line.note, "")
+
+    def test_command_exports_csv_without_changing_data(self):
+        line = self._line(note="Banheiro Casal - 301")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = Path(temp_dir) / "referencias.csv"
+            call_command(
+                "migrar_notas_referencia_aplicacao",
+                "--dry-run",
+                "--export-csv",
+                str(csv_path),
+                stdout=StringIO(),
+            )
+
+            content = csv_path.read_text(encoding="utf-8-sig")
+            self.assertIn("material_id,medicao_id,item,localizacao,notas_atuais,referencia_sugerida,status,motivo", content)
+            self.assertIn("Banheiro Casal - 301", content)
+        line.refresh_from_db()
+        self.assertEqual(line.application_reference, "")
+        self.assertEqual(line.note, "Banheiro Casal - 301")
+
+    def test_command_migrates_history_note(self):
+        line = self._line(note="")
+        history = MeasurementLineHistory.objects.create(
+            line=line,
+            quantity_added=Decimal("2"),
+            application_date=date(2026, 7, 20),
+            note="Lavanderia - Unidade 202",
+        )
+
+        call_command("migrar_notas_referencia_aplicacao", "--apply", stdout=StringIO())
+
+        history.refresh_from_db()
+        self.assertEqual(history.application_reference, "Lavanderia - Unidade 202")
+        self.assertEqual(history.note, "")
+
+    def _line(self, *, note: str, application_reference: str = "", eap_code: str = "1.1") -> MeasurementLine:
+        item = self.item
+        if eap_code != self.item.eap_code:
+            item = BudgetItem.objects.create(
+                project=self.project,
+                eap_code=eap_code,
+                description=f"Item {eap_code}",
+                unit=self.unit,
+                qty_contracted=Decimal("100"),
+                pu_material=Decimal("1"),
+                pu_labor=Decimal("1"),
+            )
+        return MeasurementLine.objects.create(
+            period=self.period,
+            line_kind="CONTRACTED",
+            item=item,
+            location=self.location,
+            qty_period=Decimal("1"),
+            application_reference=application_reference,
+            note=note,
+        )
 
 
 class MeasurementWorkflowServiceTests(TestCase):

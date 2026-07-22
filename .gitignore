@@ -9,8 +9,11 @@ venv/
 app/db.sqlite3
 app/media/
 app/staticfiles/
+app/assets/exports/
 assets/exports/
 tasks/
+referencias_identificadas*.csv
+backup_migracao_referencia_aplicacao_*.csv
 
 # IDE
 .vscode/

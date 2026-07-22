@@ -41,13 +41,14 @@ class MeasurementPeriodAdmin(admin.ModelAdmin):
 
 @admin.register(MeasurementLine)
 class MeasurementLineAdmin(admin.ModelAdmin):
-    list_display = ("period", "location", "line_kind", "item", "qty_period", "created_at")
+    list_display = ("period", "location", "application_reference", "line_kind", "item", "qty_period", "created_at")
     list_filter = ("period__project", "line_kind", "location")
     search_fields = (
         "period__project__name",
         "item__eap_code",
         "item__description",
         "extra_description",
+        "application_reference",
         "note",
     )
 
@@ -65,6 +66,7 @@ class MeasurementLineHistoryAdmin(admin.ModelAdmin):
     list_display = (
         "line",
         "application_date",
+        "application_reference",
         "quantity_added",
         "source_item_snapshot",
         "created_by",
@@ -75,6 +77,7 @@ class MeasurementLineHistoryAdmin(admin.ModelAdmin):
         "line__period__project__name",
         "line__item__eap_code",
         "line__item__description",
+        "application_reference",
         "note",
         "created_by__username",
     )
