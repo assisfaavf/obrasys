@@ -22,6 +22,15 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - A baixa automatica por medicao fica preservada apenas na branch `archive/estoque-features-avancadas`.
 - O admin da medicao nao exibe materiais aplicados de estoque na branch MVP.
 
+## Medicoes
+
+- Cadastro individual de linhas contratadas preservado.
+- Cadastro em lote de materiais aplicados pela tela da medicao.
+- No lote, localizacao, data de aplicacao e notas sao preenchidos uma vez e aplicados a todos os itens.
+- Cada item do lote recebe sua propria quantidade e gera um registro separado.
+- O lote reaproveita o mesmo fluxo de criacao das linhas contratadas individuais, incluindo historico, consolidacao com linha existente e recalculo de materiais adicionais.
+- Itens duplicados no mesmo envio em lote sao bloqueados para evitar soma silenciosa dentro do formulario.
+
 ## Carga Inicial de Materiais e Estoque
 
 - Importacao inicial de materiais por CSV e XLSX pelo Django Admin.

@@ -3,12 +3,15 @@ from decimal import Decimal
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import Max
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from billing.forms import (
+    BulkContractedLineCommonForm,
+    BulkContractedLineItemFormSet,
     ContractedLineAddForm,
     ContractedLineEditForm,
     ExtraLineForm,
@@ -468,6 +471,57 @@ def measurement_detail_view(request, measurement_id: int):
             "indexed_preview": indexed_preview,
             "incc_data": incc_data,
             "incc_error": incc_error,
+            "today_iso": timezone.localdate().isoformat(),
+        },
+    )
+
+
+@staff_member_required
+def measurement_bulk_materials_add_view(request, measurement_id: int):
+    period = get_object_or_404(MeasurementPeriod.objects.select_related("project"), pk=measurement_id)
+
+    if period.workflow_status != WorkflowStatus.DRAFT:
+        messages.error(request, "Periodo nao esta em DRAFT.")
+        return redirect("billing:measurement_detail", measurement_id=period.id)
+
+    if request.method == "POST":
+        common_form = BulkContractedLineCommonForm(request.POST, period=period, prefix="bulk")
+        item_formset = BulkContractedLineItemFormSet(request.POST, period=period, prefix="items")
+        if common_form.is_valid() and item_formset.is_valid():
+            try:
+                with transaction.atomic():
+                    created_count = 0
+                    for item_form in item_formset.valid_item_forms():
+                        add_or_merge_contracted_line(
+                            period=period,
+                            item=item_form.cleaned_data["item"],
+                            location=common_form.cleaned_data.get("location"),
+                            qty_period=item_form.cleaned_data["qty_period"],
+                            application_date=common_form.cleaned_data.get("application_date"),
+                            note=common_form.cleaned_data.get("note", ""),
+                            excess_justification=common_form.cleaned_data.get("excess_justification", ""),
+                            use_additional_materials=False,
+                            created_by=request.user,
+                        )
+                        created_count += 1
+            except ValidationError as exc:
+                for message in exc.messages:
+                    messages.error(request, message)
+            else:
+                label = "material foi adicionado" if created_count == 1 else "materiais foram adicionados"
+                messages.success(request, f"{created_count} {label} a medicao com sucesso.")
+                return redirect("billing:measurement_detail", measurement_id=period.id)
+    else:
+        common_form = BulkContractedLineCommonForm(period=period, prefix="bulk")
+        item_formset = BulkContractedLineItemFormSet(period=period, prefix="items")
+
+    return render(
+        request,
+        "billing/measurement_bulk_materials_form.html",
+        {
+            "period": period,
+            "common_form": common_form,
+            "item_formset": item_formset,
             "today_iso": timezone.localdate().isoformat(),
         },
     )
