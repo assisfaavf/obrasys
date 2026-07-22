@@ -1,0 +1,18 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Extrato de movimentacoes{% endblock %}
+
+{% block content %}
+  <h1>Extrato de Stock movements</h1>
+  <div class="actions">
+    <a href="{% url 'stock:reports_home' %}">Resumo</a>
+    <a href="{% url 'stock:report_by_location' %}">Saldo por local</a>
+    <a href="{% url 'stock:report_by_material' %}">Saldo por material</a>
+  </div>
+
+  {% include "stock/reports/_filters.html" with show_location=True show_material=True show_movement_filters=True %}
+
+  {% include "stock/reports/_movements_table.html" with rows=report.rows %}
+  <p><strong>Movimentacoes filtradas:</strong> {{ report.count }}</p>
+  <p><strong>Quantidade total filtrada:</strong> {{ report.total_quantity }}</p>
+{% endblock %}

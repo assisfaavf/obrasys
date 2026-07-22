@@ -1,0 +1,50 @@
+{% extends "billing/base.html" %}
+
+{% block title %}Saldo por local{% endblock %}
+
+{% block content %}
+  <h1>Saldo por Stock location</h1>
+  <div class="actions">
+    <a href="{% url 'stock:reports_home' %}">Resumo</a>
+    <a href="{% url 'stock:report_by_material' %}">Saldo por material</a>
+    <a href="{% url 'stock:report_movements' %}">Extrato</a>
+  </div>
+
+  {% include "stock/reports/_filters.html" with show_location=True show_material=True show_material_filters=True show_zero_toggle=True %}
+
+  {% if report.rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>Material</th>
+          <th>Codigo</th>
+          <th>Categoria</th>
+          <th>Subcategoria</th>
+          <th>Marca</th>
+          <th>Unidade</th>
+          <th>Stock location</th>
+          <th>Saldo</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in report.rows %}
+          <tr>
+            <td><a href="{{ row.material_admin_url }}">{{ row.material_name }}</a></td>
+            <td>{{ row.material_code }}</td>
+            <td>{{ row.category|default:"-" }}</td>
+            <td>{{ row.subcategory|default:"-" }}</td>
+            <td>{{ row.brand|default:"-" }}</td>
+            <td>{{ row.unit }}</td>
+            <td><a href="{{ row.location_admin_url }}">{{ row.location_name }}</a></td>
+            <td>
+              {% if row.balance_admin_url %}<a href="{{ row.balance_admin_url }}">{{ row.quantity }}</a>{% else %}{{ row.quantity }}{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p><strong>Total filtrado:</strong> {{ report.total_quantity }}</p>
+  {% else %}
+    <p class="muted">Nenhum saldo encontrado.</p>
+  {% endif %}
+{% endblock %}

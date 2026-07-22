@@ -1,0 +1,78 @@
+<form method="get" class="card">
+  {% if show_location %}
+    <label>Stock location
+      <select name="stock_location">
+        <option value="">Todos</option>
+        {% for location in locations %}
+          <option value="{{ location.id }}" {% if filters.stock_location == location.id|stringformat:"s" %}selected{% endif %}>{{ location }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  {% endif %}
+
+  {% if show_material %}
+    <label>Material
+      <select name="material">
+        <option value="">Todos</option>
+        {% for material in materials %}
+          <option value="{{ material.id }}" {% if filters.material == material.id|stringformat:"s" %}selected{% endif %}>{{ material.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  {% endif %}
+
+  {% if show_material_filters %}
+    <label>Categoria
+      <select name="category">
+        <option value="">Todas</option>
+        {% for category in categories %}
+          <option value="{{ category }}" {% if filters.category == category %}selected{% endif %}>{{ category }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Subcategoria
+      <select name="subcategory">
+        <option value="">Todas</option>
+        {% for subcategory in subcategories %}
+          <option value="{{ subcategory }}" {% if filters.subcategory == subcategory %}selected{% endif %}>{{ subcategory }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Marca
+      <select name="brand">
+        <option value="">Todas</option>
+        {% for brand in brands %}
+          <option value="{{ brand }}" {% if filters.brand == brand %}selected{% endif %}>{{ brand }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  {% endif %}
+
+  {% if show_movement_filters %}
+    <label>Tipo
+      <select name="movement_type">
+        <option value="">Todos</option>
+        {% for value, label in movement_types %}
+          <option value="{{ value }}" {% if filters.movement_type == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Usuario
+      <select name="user">
+        <option value="">Todos</option>
+        {% for user in users %}
+          <option value="{{ user.id }}" {% if filters.user == user.id|stringformat:"s" %}selected{% endif %}>{{ user.username }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Periodo inicial <input type="date" name="date_from" value="{{ filters.date_from }}"></label>
+    <label>Periodo final <input type="date" name="date_to" value="{{ filters.date_to }}"></label>
+  {% endif %}
+
+  {% if show_zero_toggle %}
+    <label><input type="checkbox" name="show_zero" value="1" {% if filters.show_zero %}checked{% endif %}> Mostrar saldos zerados</label>
+  {% endif %}
+
+  <button type="submit">Filtrar</button>
+  <a href="{{ request.path }}">Limpar</a>
+</form>

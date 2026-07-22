@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO
 from decimal import Decimal
 from unittest import mock
@@ -9,6 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.contrib.staticfiles import finders
 from django.test import TestCase
 from django.urls import NoReverseMatch, reverse
+from django.utils import timezone
 from openpyxl import Workbook
 
 from billing.models import MeasurementLine, MeasurementPeriod, WorkflowStatus
@@ -60,6 +61,12 @@ from stock.material_request_processing import process_material_request
 from stock.purchase_import import confirm_stock_import, match_import_items, parse_stock_import_file, prepare_stock_import_items
 from stock.services import register_stock_movement
 from stock.stock_transfer import transfer_stock_between_locations, validate_stock_transfer
+from stock.stock_reports import (
+    get_stock_by_location_report,
+    get_stock_by_material_report,
+    get_stock_movements_report,
+    get_stock_summary_report,
+)
 from stock.transfer_import import confirm_stock_transfer_import, parse_stock_transfer_file, prepare_stock_transfer_items
 
 
@@ -1166,6 +1173,181 @@ class StockCoreTests(TestCase):
             qty_period=Decimal("1"),
         )
         return period
+
+
+class StockSimpleReportsTests(TestCase):
+    def setUp(self):
+        self.unit = Unit.objects.create(code="un", name="Unidade")
+        self.client_obj = Client.objects.create(name="Cliente Relatorios")
+        self.project = Project.objects.create(name="Obra Relatorios", client=self.client_obj)
+        user_model = get_user_model()
+        self.staff_user = user_model.objects.create_superuser(
+            username="stock-report-admin",
+            password="secret123",
+            email="stock-report-admin@example.com",
+        )
+        self.normal_user = user_model.objects.create_user(username="stock-report-user", password="secret123")
+        self.central = StockLocation.objects.create(
+            code="CENTRAL-REL",
+            name="Estoque central relatorios",
+            location_type=StockLocationType.CENTRAL,
+        )
+        self.project_location = StockLocation.objects.create(
+            code="OBRA-REL",
+            name="Almoxarifado relatorios",
+            location_type=StockLocationType.PROJECT,
+            project=self.project,
+        )
+        self.material = Material.objects.create(
+            code="MAT-REL-001",
+            name="Tubo PVC 100mm",
+            category="Hidrosanitario",
+            subcategory="Tubos",
+            brand="Tigre",
+            unit=self.unit,
+        )
+        self.other_material = Material.objects.create(
+            code="MAT-REL-002",
+            name="Joelho 90mm",
+            category="Hidrosanitario",
+            subcategory="Conexoes",
+            brand="Amanco",
+            unit=self.unit,
+        )
+        self.zero_material = Material.objects.create(
+            code="MAT-REL-003",
+            name="Registro gaveta",
+            category="Hidrosanitario",
+            subcategory="Registros",
+            brand="Deca",
+            unit=self.unit,
+        )
+        StockBalance.objects.create(material=self.material, location=self.central, quantity=Decimal("30"))
+        StockBalance.objects.create(material=self.material, location=self.project_location, quantity=Decimal("10"))
+        StockBalance.objects.create(material=self.other_material, location=self.central, quantity=Decimal("0"))
+        self.purchase_movement = register_stock_movement(
+            material=self.other_material,
+            location=self.project_location,
+            movement_type=StockMovementType.PURCHASE_IN,
+            quantity=Decimal("5"),
+            created_by=self.staff_user,
+            note="compra relatorio",
+        )
+        self.transfer_movement = register_stock_movement(
+            material=self.material,
+            location=self.central,
+            target_location=self.project_location,
+            movement_type=StockMovementType.TRANSFER,
+            quantity=Decimal("3"),
+            created_by=self.staff_user,
+            note="transferencia relatorio",
+        )
+        old_date = timezone.now() - timedelta(days=5)
+        StockMovement.objects.filter(pk=self.purchase_movement.pk).update(occurred_at=old_date)
+
+    def test_location_report_lists_correct_balances(self):
+        report = get_stock_by_location_report({"stock_location": str(self.central.id)})
+
+        rows = report["rows"]
+        self.assertEqual([row["material_name"] for row in rows], ["Tubo PVC 100mm"])
+        self.assertEqual(rows[0]["quantity"], Decimal("27.000"))
+
+    def test_location_report_respects_location_filter(self):
+        report = get_stock_by_location_report({"stock_location": str(self.project_location.id)})
+
+        self.assertEqual({row["location"].id for row in report["rows"]}, {self.project_location.id})
+
+    def test_location_report_hides_zero_balances_by_default(self):
+        report = get_stock_by_location_report({"stock_location": str(self.central.id)})
+
+        self.assertNotIn("Joelho 90mm", [row["material_name"] for row in report["rows"]])
+
+    def test_location_report_can_show_zero_balances(self):
+        report = get_stock_by_location_report({"stock_location": str(self.central.id), "show_zero": "1"})
+
+        names = [row["material_name"] for row in report["rows"]]
+        self.assertIn("Joelho 90mm", names)
+        self.assertIn("Registro gaveta", names)
+
+    def test_material_report_lists_balance_by_location(self):
+        report = get_stock_by_material_report({"material": str(self.material.id), "show_zero": "1"})
+
+        locations = {row["location"].id for row in report["rows"]}
+        self.assertEqual(locations, {self.central.id, self.project_location.id})
+
+    def test_material_report_calculates_total(self):
+        report = get_stock_by_material_report({"material": str(self.material.id)})
+
+        self.assertEqual(report["total_quantity"], Decimal("40.000"))
+        self.assertEqual(report["unit"], "un")
+
+    def test_movements_report_lists_stock_movements(self):
+        report = get_stock_movements_report({})
+
+        self.assertEqual(report["count"], 2)
+        self.assertIn("transferencia relatorio", [row["note"] for row in report["rows"]])
+
+    def test_movements_report_respects_date_filter(self):
+        today = timezone.localdate().isoformat()
+        report = get_stock_movements_report({"date_from": today})
+
+        self.assertEqual(report["count"], 1)
+        self.assertEqual(report["rows"][0]["movement_type_code"], StockMovementType.TRANSFER)
+
+    def test_movements_report_respects_material_filter(self):
+        report = get_stock_movements_report({"material": str(self.material.id)})
+
+        self.assertEqual(report["count"], 1)
+        self.assertEqual(report["rows"][0]["material"], self.material)
+
+    def test_movements_report_respects_stock_location_filter(self):
+        report = get_stock_movements_report({"stock_location": str(self.project_location.id)})
+
+        self.assertEqual(report["count"], 2)
+
+    def test_summary_report_shows_basic_counters(self):
+        summary = get_stock_summary_report({})
+
+        self.assertEqual(summary["total_materials"], 3)
+        self.assertEqual(summary["total_locations"], 2)
+        self.assertEqual(summary["positive_balance_items"], 3)
+        self.assertEqual(summary["movement_count"], 2)
+
+    def test_report_views_require_staff_user(self):
+        response = self.client.get(reverse("stock:reports_home"))
+        self.assertEqual(response.status_code, 302)
+
+        self.client.login(username="stock-report-user", password="secret123")
+        response = self.client.get(reverse("stock:reports_home"))
+        self.assertEqual(response.status_code, 302)
+
+    def test_report_views_render_for_staff_user(self):
+        self.client.login(username="stock-report-admin", password="secret123")
+
+        response = self.client.get(reverse("stock:report_by_location"), {"stock_location": self.central.id})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Tubo PVC 100mm")
+
+    def test_reports_do_not_change_balances_or_create_movements(self):
+        balance_snapshot = list(StockBalance.objects.order_by("id").values_list("id", "quantity"))
+        movement_count = StockMovement.objects.count()
+        self.client.login(username="stock-report-admin", password="secret123")
+
+        self.client.get(reverse("stock:report_by_location"), {"stock_location": self.central.id, "show_zero": "1"})
+        self.client.get(reverse("stock:report_by_material"), {"material": self.material.id})
+        self.client.get(reverse("stock:report_movements"), {"material": self.material.id})
+
+        self.assertEqual(balance_snapshot, list(StockBalance.objects.order_by("id").values_list("id", "quantity")))
+        self.assertEqual(StockMovement.objects.count(), movement_count)
+
+    def test_location_report_returns_predictable_order(self):
+        report = get_stock_by_location_report({"stock_location": str(self.central.id), "show_zero": "1"})
+
+        self.assertEqual(
+            [row["material_name"] for row in report["rows"]],
+            ["Joelho 90mm", "Registro gaveta", "Tubo PVC 100mm"],
+        )
 
 
 class InitialStockImportTests(TestCase):
