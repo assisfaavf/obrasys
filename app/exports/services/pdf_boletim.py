@@ -34,6 +34,16 @@ def _to_str(value) -> str:
     return str(value)
 
 
+def _location_str(line) -> str:
+    location = _to_str(getattr(line.location, "code", "-")).strip() or "-"
+    reference = (getattr(line, "application_reference", "") or "").strip()
+    if not reference:
+        return location
+    if location == "-":
+        return reference
+    return f"{location} | {reference}"
+
+
 def _format_decimal(value: Decimal, places: int = 2) -> str:
     if value is None:
         value = Decimal("0")
@@ -254,7 +264,7 @@ def _build_period_data(period: MeasurementPeriod) -> dict:
             [
                 _to_str(line.item.eap_code),
                 _to_str(line.item.description),
-                _to_str(getattr(line.location, "code", "-")),
+                _location_str(line),
                 _format_decimal(line.qty_period or Decimal("0"), 3),
                 _format_decimal(previous, 3),
                 _format_decimal(accumulated, 3),

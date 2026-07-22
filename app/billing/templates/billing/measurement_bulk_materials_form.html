@@ -105,6 +105,12 @@
         {{ common_form.location.errors }}
       </p>
       <p>
+        {{ common_form.application_reference.label_tag }}
+        {{ common_form.application_reference }}
+        {{ common_form.application_reference.errors }}
+        <span class="muted">{{ common_form.application_reference.help_text }}</span>
+      </p>
+      <p>
         {{ common_form.application_date.label_tag }}
         {{ common_form.application_date }}
         {{ common_form.application_date.errors }}

@@ -55,6 +55,16 @@ def _to_text(value) -> str:
     return text or "-"
 
 
+def _location_text(line) -> str:
+    location = _to_text(getattr(line.location, "code", None))
+    reference = _to_text(getattr(line, "application_reference", ""))
+    if reference == "-":
+        return location
+    if location == "-":
+        return reference
+    return f"{location} | {reference}"
+
+
 def _format_month(value) -> str:
     if not value:
         return "-"
@@ -275,7 +285,7 @@ def group_measurement_data_by_discipline(period: MeasurementPeriod) -> OrderedDi
                 [
                     _to_text(item.eap_code),
                     _to_text(item.description),
-                    _to_text(getattr(line.location, "code", None)),
+                    _location_text(line),
                     _to_text(getattr(item.unit, "code", None)),
                     contracted_qty,
                     previous,
@@ -291,7 +301,7 @@ def group_measurement_data_by_discipline(period: MeasurementPeriod) -> OrderedDi
                 [
                     _to_text(item.eap_code),
                     _to_text(item.description),
-                    _to_text(getattr(line.location, "code", None)),
+                    _location_text(line),
                     excess_qty,
                     excess_qty * unit_total,
                     _to_text(line.excess_justification),

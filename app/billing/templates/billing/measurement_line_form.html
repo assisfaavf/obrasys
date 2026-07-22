@@ -59,6 +59,12 @@
           {{ form.excess_justification.errors }}
         </p>
         <p>
+          {{ form.application_reference.label_tag }}
+          {{ form.application_reference }}
+          {{ form.application_reference.errors }}
+          <span class="muted">{{ form.application_reference.help_text }}</span>
+        </p>
+        <p>
           {{ form.note.label_tag }}
           {{ form.note }}
           {{ form.note.errors }}
@@ -125,6 +131,7 @@
         <tr>
           <th>Data de aplicacao</th>
           <th>Quantidade adicionada</th>
+          <th>Referencia</th>
           <th>Nota</th>
           <th>Origem</th>
           <th>Usuario</th>
@@ -137,6 +144,7 @@
           <tr>
             <td>{{ history.application_date|date:"d/m/Y" }}</td>
             <td>{{ history.quantity_added|br_decimal:3 }}</td>
+            <td>{{ history.application_reference|default:"-" }}</td>
             <td>{{ history.note|default:"-" }}</td>
             <td>{{ history.source_item_snapshot|default:"-" }}</td>
             <td>
@@ -157,7 +165,7 @@
           </tr>
         {% empty %}
           <tr>
-            <td colspan="7">Sem historico de adicoes.</td>
+            <td colspan="8">Sem historico de adicoes.</td>
           </tr>
         {% endfor %}
       </tbody>

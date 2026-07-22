@@ -327,6 +327,16 @@ def _format_period_label(period: MeasurementPeriod) -> str:
     return ""
 
 
+def _append_application_context(description: str, line) -> str:
+    parts = [description]
+    if line.location_id and line.location and line.location.code:
+        parts.append(f"Local {line.location.code}")
+    application_reference = (getattr(line, "application_reference", "") or "").strip()
+    if application_reference:
+        parts.append(f"Referencia {application_reference}")
+    return " | ".join(parts)
+
+
 def _build_contract_progress(period: MeasurementPeriod, stage_context: dict) -> tuple[dict[str, dict], list[dict], list[dict]]:
     lines = list(
         period.lines.select_related("item", "item__unit", "location", "extra_unit").order_by("item_id", "id")
@@ -359,9 +369,7 @@ def _build_contract_progress(period: MeasurementPeriod, stage_context: dict) -> 
             effective_total += effective_qty
 
             if excess_qty > 0:
-                description = f"{item.eap_code} - {item.description}"
-                if line.location_id and line.location and line.location.code:
-                    description = f"{description} | Local {line.location.code}"
+                description = _append_application_context(f"{item.eap_code} - {item.description}", line)
                 excess_entries.append(
                     {
                         "measurement_number": period.number,
@@ -395,9 +403,7 @@ def _build_contract_progress(period: MeasurementPeriod, stage_context: dict) -> 
         if qty_period <= 0:
             continue
 
-        description = line.extra_description
-        if line.location_id and line.location and line.location.code:
-            description = f"{description} | Local {line.location.code}"
+        description = _append_application_context(line.extra_description, line)
         extra_entries.append(
             {
                 "measurement_number": period.number,

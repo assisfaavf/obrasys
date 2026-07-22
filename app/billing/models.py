@@ -199,6 +199,12 @@ class MeasurementLine(models.Model):
     excess_qty = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
     excess_justification = models.TextField(blank=True)
     justification = models.TextField(blank=True)
+    application_reference = models.CharField(
+        "Referencia da aplicacao",
+        max_length=150,
+        blank=True,
+        db_index=True,
+    )
     note = models.CharField(max_length=255, blank=True)
     is_generated_additional = models.BooleanField(default=False)
     use_additional_materials = models.BooleanField(default=False)
@@ -301,6 +307,12 @@ class MeasurementLineHistory(models.Model):
     )
     quantity_added = models.DecimalField(max_digits=14, decimal_places=3)
     application_date = models.DateField()
+    application_reference = models.CharField(
+        "Referencia da aplicacao",
+        max_length=150,
+        blank=True,
+        db_index=True,
+    )
     note = models.TextField(blank=True)
     source_line = models.ForeignKey(
         "billing.MeasurementLine",
