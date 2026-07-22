@@ -3,6 +3,85 @@
 {% block title %}Adicionar materiais em lote{% endblock %}
 
 {% block content %}
+  <style>
+    #bulk-items-table {
+      table-layout: fixed;
+      width: 100%;
+    }
+
+    #bulk-items-table th,
+    #bulk-items-table td {
+      overflow-wrap: anywhere;
+      word-break: normal;
+    }
+
+    #bulk-items-table th:nth-child(1),
+    #bulk-items-table td:nth-child(1) {
+      width: 56px;
+    }
+
+    #bulk-items-table th:nth-child(3),
+    #bulk-items-table td:nth-child(3) {
+      width: 160px;
+    }
+
+    #bulk-items-table th:nth-child(4),
+    #bulk-items-table td:nth-child(4) {
+      width: 112px;
+    }
+
+    #bulk-items-table select,
+    #bulk-items-table input[type="number"],
+    #bulk-items-table input[type="text"] {
+      box-sizing: border-box;
+      max-width: 100%;
+      width: 100%;
+      min-width: 0;
+    }
+
+    #bulk-items-table select,
+    #bulk-items-table option {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    #bulk-items-table .remove-row {
+      max-width: 100%;
+      white-space: normal;
+    }
+
+    @media (max-width: 720px) {
+      #bulk-items-table,
+      #bulk-items-table thead,
+      #bulk-items-table tbody,
+      #bulk-items-table th,
+      #bulk-items-table td,
+      #bulk-items-table tr {
+        display: block;
+        width: 100%;
+      }
+
+      #bulk-items-table thead {
+        display: none;
+      }
+
+      #bulk-items-table tr {
+        border: 1px solid #ccc;
+        margin-bottom: 12px;
+      }
+
+      #bulk-items-table td {
+        border: 0;
+        border-bottom: 1px solid #ddd;
+        box-sizing: border-box;
+      }
+
+      #bulk-items-table td:last-child {
+        border-bottom: 0;
+      }
+    }
+  </style>
+
   <h1>Adicionar materiais em lote</h1>
   <p class="muted">
     Medicao {{ period.number }} - {{ period.project.name }}
