@@ -410,6 +410,7 @@ class PredefinedEnvironmentMaterialForm(forms.ModelForm):
         self.environment_discipline = environment_discipline
         self.fields["item"].queryset = BudgetItem.objects.filter(
             project=environment_discipline.environment.project,
+            discipline=environment_discipline.discipline,
             is_active=True,
         ).order_by("eap_code")
         _apply_measurement_item_select_attrs(self.fields["item"])

@@ -686,6 +686,16 @@ class PredefinedEnvironmentMaterialsTests(TestCase):
         self.item_a = self._create_item("1.1", "Tubo PVC 100mm")
         self.item_b = self._create_item("1.2", "Joelho PVC 100mm")
         self.item_c = self._create_item("1.3", "Luva PVC 50mm")
+        self.other_discipline_item = BudgetItem.objects.create(
+            project=self.project,
+            eap_code="2.1",
+            description="Registro agua fria",
+            unit=self.unit,
+            qty_contracted=Decimal("100"),
+            pu_material=Decimal("1"),
+            pu_labor=Decimal("1"),
+            discipline=self.other_discipline,
+        )
         self.foreign_item = BudgetItem.objects.create(
             project=self.other_project,
             eap_code="9.1",
@@ -753,9 +763,26 @@ class PredefinedEnvironmentMaterialsTests(TestCase):
         with self.assertRaises(ValidationError):
             PredefinedEnvironmentMaterial.objects.create(
                 environment_discipline=self.environment_discipline,
+                item=self.other_discipline_item,
+                default_quantity=Decimal("1"),
+            )
+
+        with self.assertRaises(ValidationError):
+            PredefinedEnvironmentMaterial.objects.create(
+                environment_discipline=self.environment_discipline,
                 item=self.item_c,
                 default_quantity=Decimal("0"),
             )
+
+    def test_material_pattern_dropdown_lists_only_items_from_selected_discipline(self):
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.get(reverse("billing:predefined_environment_detail", args=[self.environment.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Tubo PVC 100mm")
+        self.assertContains(response, "Joelho PVC 100mm")
+        self.assertNotContains(response, "Registro agua fria")
 
     def test_authorized_user_can_access_environment_application_page(self):
         self.client.login(username="environment-admin", password="test")

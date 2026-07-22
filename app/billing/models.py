@@ -486,6 +486,8 @@ class PredefinedEnvironmentMaterial(models.Model):
         project_id = self.environment_discipline.environment.project_id
         if self.item.project_id != project_id:
             raise ValidationError("O material padrao deve pertencer a mesma obra do ambiente.")
+        if self.item.discipline_id != self.environment_discipline.discipline_id:
+            raise ValidationError("O material padrao deve pertencer a disciplina selecionada.")
         if not self.item.is_active:
             raise ValidationError("O material selecionado esta inativo.")
 
