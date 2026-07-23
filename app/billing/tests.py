@@ -378,7 +378,7 @@ class MeasurementBulkMaterialsTests(TestCase):
         self.assertEqual([line.qty_period for line in lines], [Decimal("10.000"), Decimal("4.000"), Decimal("2.000")])
         self.assertEqual({line.location for line in lines}, {self.location})
         self.assertEqual({line.note for line in lines}, {"Material aplicado na prumada principal"})
-        self.assertEqual({line.application_reference for line in lines}, {"Banheiro Casal - 301"})
+        self.assertEqual({line.application_reference for line in lines}, {""})
         histories = list(MeasurementLineHistory.objects.order_by("line__item__eap_code"))
         self.assertEqual(len(histories), 3)
         self.assertEqual({history.application_date for history in histories}, {date(2026, 7, 20)})
@@ -545,18 +545,17 @@ class MeasurementBulkMaterialsTests(TestCase):
         line = MeasurementLine.objects.get()
         self.assertEqual(line.item, self.item_a)
         self.assertEqual(line.qty_period, Decimal("2.000"))
-        self.assertEqual(line.application_reference, "Banheiro Social - 402")
+        self.assertEqual(line.application_reference, "")
         self.assertEqual(line.histories.get().note, "individual")
         self.assertEqual(line.histories.get().application_reference, "Banheiro Social - 402")
 
-    def test_individual_line_edit_updates_and_removes_application_reference_without_changing_note(self):
+    def test_individual_line_edit_does_not_show_or_change_application_reference(self):
         line = MeasurementLine.objects.create(
             period=self.period,
             line_kind="CONTRACTED",
             item=self.item_a,
             location=self.location,
             qty_period=Decimal("2"),
-            application_reference="Banheiro Casal - 301",
             note="nota preservada",
         )
         MeasurementLineHistory.objects.create(
@@ -567,6 +566,12 @@ class MeasurementBulkMaterialsTests(TestCase):
             note="nota preservada",
         )
         self.client.login(username="bulk-admin", password="test")
+
+        response = self.client.get(reverse("billing:line_edit", args=[line.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'name="application_reference"')
+        self.assertContains(response, "Banheiro Casal - 301")
 
         self.client.post(
             reverse("billing:line_edit", args=[line.id]),
@@ -580,22 +585,9 @@ class MeasurementBulkMaterialsTests(TestCase):
             },
         )
         line.refresh_from_db()
-        self.assertEqual(line.application_reference, "Prumada A")
-        self.assertEqual(line.note, "nota preservada")
-
-        self.client.post(
-            reverse("billing:line_edit", args=[line.id]),
-            {
-                "item": str(self.item_a.id),
-                "location": str(self.location.id),
-                "qty_period": "2",
-                "application_reference": "",
-                "note": "nota preservada",
-                "excess_justification": "",
-            },
-        )
-        line.refresh_from_db()
+        history = line.histories.get()
         self.assertEqual(line.application_reference, "")
+        self.assertEqual(history.application_reference, "Banheiro Casal - 301")
         self.assertEqual(line.note, "nota preservada")
 
     def test_bulk_merges_with_existing_line_like_individual_flow(self):
@@ -616,6 +608,7 @@ class MeasurementBulkMaterialsTests(TestCase):
 
         self.assertEqual(MeasurementLine.objects.count(), 1)
         self.assertEqual(MeasurementLine.objects.get().qty_period, Decimal("3.000"))
+        self.assertEqual(MeasurementLine.objects.get().application_reference, "")
 
     def _create_item(self, eap_code: str, description: str) -> BudgetItem:
         return BudgetItem.objects.create(
@@ -784,6 +777,52 @@ class PredefinedEnvironmentMaterialsTests(TestCase):
         self.assertContains(response, "Joelho PVC 100mm")
         self.assertNotContains(response, "Registro agua fria")
 
+    def test_material_pattern_quantity_can_be_edited_inline(self):
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:predefined_environment_detail", args=[self.environment.id]),
+            {
+                "action": "update_material",
+                "material_id": str(self.material_a.id),
+                "default_quantity": "3.750",
+                "order_index": "7",
+                "is_active": "on",
+            },
+        )
+
+        self.assertRedirects(response, reverse("billing:predefined_environment_detail", args=[self.environment.id]))
+        self.material_a.refresh_from_db()
+        self.assertEqual(self.material_a.default_quantity, Decimal("3.750"))
+        self.assertEqual(self.material_a.order_index, 7)
+        self.assertTrue(self.material_a.is_active)
+
+    def test_material_pattern_edit_does_not_change_existing_measurement_line(self):
+        MeasurementLine.objects.create(
+            period=self.period,
+            line_kind="CONTRACTED",
+            item=self.item_a,
+            location=self.location,
+            qty_period=Decimal("2"),
+        )
+        self.client.login(username="environment-admin", password="test")
+
+        self.client.post(
+            reverse("billing:predefined_environment_detail", args=[self.environment.id]),
+            {
+                "action": "update_material",
+                "material_id": str(self.material_a.id),
+                "default_quantity": "4.500",
+                "order_index": "1",
+                "is_active": "on",
+            },
+        )
+
+        self.material_a.refresh_from_db()
+        line = MeasurementLine.objects.get()
+        self.assertEqual(self.material_a.default_quantity, Decimal("4.500"))
+        self.assertEqual(line.qty_period, Decimal("2.000"))
+
     def test_authorized_user_can_access_environment_application_page(self):
         self.client.login(username="environment-admin", password="test")
 
@@ -856,7 +895,8 @@ class PredefinedEnvironmentMaterialsTests(TestCase):
         lines = list(MeasurementLine.objects.order_by("item__eap_code"))
         self.assertEqual([line.qty_period for line in lines], [Decimal("1.500"), Decimal("5.000")])
         self.assertEqual({line.location for line in lines}, {self.location})
-        self.assertEqual({line.application_reference for line in lines}, {"Banheiro Casal - apartamento 301"})
+        self.assertEqual({line.application_reference for line in lines}, {""})
+        self.assertEqual({history.application_reference for line in lines for history in line.histories.all()}, {"Banheiro Casal - apartamento 301"})
         self.assertEqual({line.note for line in lines}, {"Ajuste proximo ao shaft"})
 
     def test_removed_default_material_is_not_created_and_pattern_is_preserved(self):
@@ -920,7 +960,7 @@ class PredefinedEnvironmentMaterialsTests(TestCase):
 
         self.assertNotContains(response, "Banheiro Casal</option>")
 
-    def test_applying_same_pattern_to_different_references_creates_independent_lines(self):
+    def test_applying_same_pattern_to_different_references_merges_line_and_keeps_history_references(self):
         self.client.login(username="environment-admin", password="test")
 
         self.client.post(
@@ -932,10 +972,15 @@ class PredefinedEnvironmentMaterialsTests(TestCase):
             self._application_post_data([(self.item_a, "2")], application_reference="Banheiro Casal - 302"),
         )
 
-        lines = list(MeasurementLine.objects.order_by("application_reference"))
-        self.assertEqual(len(lines), 2)
-        self.assertEqual([line.application_reference for line in lines], ["Banheiro Casal - 301", "Banheiro Casal - 302"])
-        self.assertEqual([line.qty_period for line in lines], [Decimal("1.000"), Decimal("2.000")])
+        line = MeasurementLine.objects.get()
+        self.assertEqual(line.qty_period, Decimal("3.000"))
+        histories = list(line.histories.order_by("application_reference"))
+        self.assertEqual(len(histories), 2)
+        self.assertEqual(
+            [history.application_reference for history in histories],
+            ["Banheiro Casal - 301", "Banheiro Casal - 302"],
+        )
+        self.assertEqual([history.quantity_added for history in histories], [Decimal("1.000"), Decimal("2.000")])
 
     def _create_item(self, eap_code: str, description: str) -> BudgetItem:
         return BudgetItem.objects.create(

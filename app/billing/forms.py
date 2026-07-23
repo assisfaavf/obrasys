@@ -69,7 +69,7 @@ class MeasurementPeriodForm(forms.ModelForm):
 class MeasurementLineForm(forms.ModelForm):
     class Meta:
         model = MeasurementLine
-        fields = ["item", "location", "qty_period", "excess_justification", "application_reference", "note"]
+        fields = ["item", "location", "qty_period", "excess_justification", "note"]
         widgets = {
             "excess_justification": forms.Textarea(attrs={"rows": 2}),
         }
@@ -87,11 +87,6 @@ class MeasurementLineForm(forms.ModelForm):
         self.fields["location"].required = False
         self.fields["excess_justification"].required = False
         self.fields["excess_justification"].label = "Justificativa do excedente"
-        self.fields["application_reference"].required = False
-        self.fields["application_reference"].label = "Referencia da aplicacao"
-        self.fields["application_reference"].help_text = (
-            "Informe a unidade, apartamento, comodo ou identificacao especifica da aplicacao."
-        )
         self.fields["note"].required = False
 
     def clean_qty_period(self):

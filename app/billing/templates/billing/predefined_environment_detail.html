@@ -82,18 +82,48 @@
         <tbody>
           {% for material in section.discipline.materials.all %}
             <tr>
-              <td>{{ material.order_index }}</td>
+              <td>
+                <form method="post" id="material-update-{{ material.id }}">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="update_material">
+                  <input type="hidden" name="material_id" value="{{ material.id }}">
+                </form>
+                <input
+                  form="material-update-{{ material.id }}"
+                  type="number"
+                  name="order_index"
+                  value="{{ material.order_index }}"
+                  min="0"
+                  style="width: 6rem;"
+                >
+              </td>
               <td>{{ material.item.eap_code }} - {{ material.item.description }}</td>
               <td>{{ material.item.unit.code }}</td>
-              <td>{{ material.default_quantity|br_decimal:3 }}</td>
-              <td>{{ material.is_active|yesno:"Ativo,Inativo" }}</td>
               <td>
-                <form method="post">
-                  {% csrf_token %}
-                  <input type="hidden" name="action" value="toggle_material">
-                  <input type="hidden" name="material_id" value="{{ material.id }}">
-                  <button type="submit">{{ material.is_active|yesno:"Inativar,Ativar" }}</button>
-                </form>
+                <input
+                  form="material-update-{{ material.id }}"
+                  type="number"
+                  name="default_quantity"
+                  value="{{ material.default_quantity|stringformat:'0.3f' }}"
+                  min="0.001"
+                  step="0.001"
+                  required
+                  style="width: 10rem;"
+                >
+              </td>
+              <td>
+                <label>
+                  <input
+                    form="material-update-{{ material.id }}"
+                    type="checkbox"
+                    name="is_active"
+                    {% if material.is_active %}checked{% endif %}
+                  >
+                  Ativo
+                </label>
+              </td>
+              <td>
+                <button form="material-update-{{ material.id }}" type="submit">Salvar</button>
               </td>
             </tr>
           {% empty %}
