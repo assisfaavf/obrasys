@@ -299,6 +299,23 @@ def predefined_environment_detail_view(request, environment_id: int):
             material.save(update_fields=["is_active", "updated_at"])
             messages.success(request, "Status do material padrao atualizado.")
             return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+        elif action == "update_material":
+            material = get_object_or_404(
+                PredefinedEnvironmentMaterial.objects.select_related("environment_discipline"),
+                pk=request.POST.get("material_id"),
+                environment_discipline__environment=environment,
+            )
+            material.default_quantity = request.POST.get("default_quantity")
+            material.order_index = request.POST.get("order_index") or 0
+            material.is_active = request.POST.get("is_active") == "on"
+            try:
+                material.save()
+            except ValidationError as exc:
+                for message in exc.messages:
+                    messages.error(request, message)
+            else:
+                messages.success(request, "Material padrao atualizado.")
+                return redirect("billing:predefined_environment_detail", environment_id=environment.id)
 
     disciplines = list(environment.disciplines.select_related("discipline").prefetch_related("materials__item__unit"))
     discipline_sections = []

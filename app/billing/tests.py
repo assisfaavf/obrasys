@@ -784,6 +784,53 @@ class PredefinedEnvironmentMaterialsTests(TestCase):
         self.assertContains(response, "Joelho PVC 100mm")
         self.assertNotContains(response, "Registro agua fria")
 
+    def test_material_pattern_quantity_can_be_edited_inline(self):
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:predefined_environment_detail", args=[self.environment.id]),
+            {
+                "action": "update_material",
+                "material_id": str(self.material_a.id),
+                "default_quantity": "3.750",
+                "order_index": "7",
+                "is_active": "on",
+            },
+        )
+
+        self.assertRedirects(response, reverse("billing:predefined_environment_detail", args=[self.environment.id]))
+        self.material_a.refresh_from_db()
+        self.assertEqual(self.material_a.default_quantity, Decimal("3.750"))
+        self.assertEqual(self.material_a.order_index, 7)
+        self.assertTrue(self.material_a.is_active)
+
+    def test_material_pattern_edit_does_not_change_existing_measurement_line(self):
+        MeasurementLine.objects.create(
+            period=self.period,
+            line_kind="CONTRACTED",
+            item=self.item_a,
+            location=self.location,
+            qty_period=Decimal("2"),
+            application_reference="Banheiro Casal - 301",
+        )
+        self.client.login(username="environment-admin", password="test")
+
+        self.client.post(
+            reverse("billing:predefined_environment_detail", args=[self.environment.id]),
+            {
+                "action": "update_material",
+                "material_id": str(self.material_a.id),
+                "default_quantity": "4.500",
+                "order_index": "1",
+                "is_active": "on",
+            },
+        )
+
+        self.material_a.refresh_from_db()
+        line = MeasurementLine.objects.get()
+        self.assertEqual(self.material_a.default_quantity, Decimal("4.500"))
+        self.assertEqual(line.qty_period, Decimal("2.000"))
+
     def test_authorized_user_can_access_environment_application_page(self):
         self.client.login(username="environment-admin", password="test")
 
