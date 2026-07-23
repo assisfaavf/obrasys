@@ -99,7 +99,6 @@ def _sync_line_quantity_from_history(
     _prepare_manual_contracted_line(
         line,
         note=latest_note,
-        application_reference=line.application_reference,
         excess_justification=line.excess_justification,
         use_additional_materials=additional_qty > 0,
         additional_materials_base_qty=additional_qty,
@@ -115,7 +114,7 @@ def _reconcile_manual_histories_with_total(
     line: MeasurementLine,
     desired_qty: Decimal,
     note: str = "",
-    application_reference: str = "",
+    application_reference: str | None = None,
     use_additional_materials: bool = False,
     created_by=None,
 ) -> MeasurementLine:
@@ -148,8 +147,9 @@ def _reconcile_manual_histories_with_total(
     if note.strip():
         latest_history.note = note.strip()
         latest_history.save(update_fields=["note"])
-    latest_history.application_reference = (application_reference or "").strip()
-    latest_history.save(update_fields=["application_reference"])
+    if application_reference is not None:
+        latest_history.application_reference = application_reference.strip()
+        latest_history.save(update_fields=["application_reference"])
 
     if qty_delta > 0:
         latest_history.quantity_added = _q_qty(latest_history.quantity_added + qty_delta)
@@ -163,15 +163,15 @@ def _reconcile_manual_histories_with_total(
         for history in histories:
             if history.pk == latest_history.pk and note.strip():
                 history.note = note.strip()
-            if history.pk == latest_history.pk:
-                history.application_reference = (application_reference or "").strip()
+            if history.pk == latest_history.pk and application_reference is not None:
+                history.application_reference = application_reference.strip()
             if history.quantity_added > qty_to_reduce:
                 history.quantity_added = _q_qty(history.quantity_added - qty_to_reduce)
                 history.additional_materials_quantity = history.quantity_added if use_additional_materials else Decimal("0")
                 update_fields = ["quantity_added", "additional_materials_quantity"]
                 if history.pk == latest_history.pk and note.strip():
                     update_fields.append("note")
-                if history.pk == latest_history.pk:
+                if history.pk == latest_history.pk and application_reference is not None:
                     update_fields.append("application_reference")
                 history.save(update_fields=update_fields)
                 qty_to_reduce = Decimal("0")
@@ -208,8 +208,6 @@ def update_history_entry(
     history.save()
 
     line = history.line
-    line.application_reference = history.application_reference
-    line.save(update_fields=["application_reference"])
     _sync_line_quantity_from_history(line=line, created_by=created_by)
     history.refresh_from_db()
     return history
@@ -222,12 +220,11 @@ def _prepare_manual_contracted_line(
     excess_justification: str,
     use_additional_materials: bool,
     additional_materials_base_qty: Decimal,
-    application_reference: str = "",
 ) -> MeasurementLine:
     line.line_kind = MeasurementLineKind.CONTRACTED
     line.justification = ""
     line.note = (note or "").strip()
-    line.application_reference = (application_reference or "").strip()
+    line.application_reference = ""
     line.generated_from_line = None
     line.is_generated_additional = False
     line.use_additional_materials = bool(use_additional_materials)
@@ -451,7 +448,6 @@ def add_or_merge_contracted_line(
             line_kind=MeasurementLineKind.CONTRACTED,
             item=item,
             location=location,
-            application_reference=(application_reference or "").strip(),
             is_generated_additional=False,
         )
         .first()
@@ -470,7 +466,6 @@ def add_or_merge_contracted_line(
             excess_justification=excess_justification,
             use_additional_materials=use_additional_materials,
             additional_materials_base_qty=qty_period if use_additional_materials else Decimal("0"),
-            application_reference=application_reference,
         )
         line.save()
         _create_history(
@@ -493,7 +488,6 @@ def add_or_merge_contracted_line(
 
     existing_line.qty_period = _q_qty((existing_line.qty_period or Decimal("0")) + qty_period)
     existing_line.note = _merge_text(existing_line.note, note)
-    existing_line.application_reference = _merge_text(existing_line.application_reference, application_reference)
     existing_line.excess_justification = _merge_text(
         existing_line.excess_justification,
         excess_justification,
@@ -507,7 +501,6 @@ def add_or_merge_contracted_line(
         excess_justification=existing_line.excess_justification,
         use_additional_materials=new_base_qty > 0,
         additional_materials_base_qty=new_base_qty,
-        application_reference=existing_line.application_reference,
     )
     existing_line.save()
     _create_history(
@@ -536,7 +529,6 @@ def update_contracted_line(
     item,
     location,
     qty_period: Decimal,
-    application_reference: str = "",
     note: str = "",
     excess_justification: str = "",
     use_additional_materials: bool = False,
@@ -549,13 +541,11 @@ def update_contracted_line(
 
     line.item = item
     line.location = location
-    line.application_reference = (application_reference or "").strip()
     line.excess_justification = (excess_justification or "").strip()
-    line.save(update_fields=["item", "location", "application_reference", "excess_justification"])
+    line.save(update_fields=["item", "location", "excess_justification"])
     _reconcile_manual_histories_with_total(
         line=line,
         desired_qty=qty_period,
-        application_reference=application_reference,
         note=note,
         use_additional_materials=use_additional_materials,
         created_by=created_by,

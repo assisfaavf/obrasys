@@ -903,7 +903,6 @@ def measurement_line_edit_view(request, line_id: int):
                     item=form.cleaned_data["item"],
                     location=form.cleaned_data.get("location"),
                     qty_period=form.cleaned_data["qty_period"],
-                    application_reference=form.cleaned_data.get("application_reference", ""),
                     note=form.cleaned_data.get("note", ""),
                     excess_justification=form.cleaned_data.get("excess_justification", ""),
                     use_additional_materials=form.cleaned_data.get("use_additional_materials", False),

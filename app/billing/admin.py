@@ -86,14 +86,13 @@ class MeasurementPeriodAdmin(admin.ModelAdmin):
 
 @admin.register(MeasurementLine)
 class MeasurementLineAdmin(admin.ModelAdmin):
-    list_display = ("period", "location", "application_reference", "line_kind", "item", "qty_period", "created_at")
+    list_display = ("period", "location", "line_kind", "item", "qty_period", "created_at")
     list_filter = ("period__project", "line_kind", "location")
     search_fields = (
         "period__project__name",
         "item__eap_code",
         "item__description",
         "extra_description",
-        "application_reference",
         "note",
     )
 
