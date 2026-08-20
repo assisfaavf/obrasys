@@ -5,3 +5,5 @@ openpyxl
 Pillow
 python-docx
 djangorestframework
+gunicorn
+whitenoise[brotli]
