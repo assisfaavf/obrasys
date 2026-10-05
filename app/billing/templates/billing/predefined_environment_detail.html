@@ -19,6 +19,20 @@
       overflow-wrap: anywhere;
       word-break: break-word;
     }
+
+    .predefined-material-row.dragging {
+      opacity: 0.55;
+    }
+
+    .drag-handle {
+      cursor: grab;
+      margin-right: 0.5rem;
+    }
+
+    .order-number {
+      display: inline-block;
+      min-width: 2rem;
+    }
   </style>
 
   <h1>{{ environment.name }}</h1>
@@ -68,69 +82,60 @@
         <button type="submit">{{ section.discipline.is_active|yesno:"Inativar,Ativar" }}</button>
       </form>
 
-      <table>
-        <thead>
-          <tr>
-            <th>Ordem</th>
-            <th>Material</th>
-            <th>Unidade</th>
-            <th>Quantidade padrao</th>
-            <th>Status</th>
-            <th>Acoes</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for material in section.discipline.materials.all %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="environment_discipline_id" value="{{ section.discipline.id }}">
+        <table>
+          <thead>
             <tr>
-              <td>
-                <form method="post" id="material-update-{{ material.id }}">
-                  {% csrf_token %}
-                  <input type="hidden" name="action" value="update_material">
-                  <input type="hidden" name="material_id" value="{{ material.id }}">
-                </form>
-                <input
-                  form="material-update-{{ material.id }}"
-                  type="number"
-                  name="order_index"
-                  value="{{ material.order_index }}"
-                  min="0"
-                  style="width: 6rem;"
-                >
-              </td>
-              <td>{{ material.item.eap_code }} - {{ material.item.description }}</td>
-              <td>{{ material.item.unit.code }}</td>
-              <td>
-                <input
-                  form="material-update-{{ material.id }}"
-                  type="number"
-                  name="default_quantity"
-                  value="{{ material.default_quantity|stringformat:'0.3f' }}"
-                  min="0.001"
-                  step="0.001"
-                  required
-                  style="width: 10rem;"
-                >
-              </td>
-              <td>
-                <label>
-                  <input
-                    form="material-update-{{ material.id }}"
-                    type="checkbox"
-                    name="is_active"
-                    {% if material.is_active %}checked{% endif %}
-                  >
-                  Ativo
-                </label>
-              </td>
-              <td>
-                <button form="material-update-{{ material.id }}" type="submit">Salvar</button>
-              </td>
+              <th>Ordem</th>
+              <th>Material</th>
+              <th>Unidade</th>
+              <th>Quantidade padrao</th>
+              <th>Acoes</th>
             </tr>
-          {% empty %}
-            <tr><td colspan="6">Sem materiais padrao nesta disciplina.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody class="predefined-materials-list">
+            {% for material in section.discipline.materials.all %}
+              <tr class="predefined-material-row" draggable="true">
+                <td>
+                  <button class="drag-handle" type="button" aria-label="Arrastar material">Arrastar</button>
+                  <span class="order-number">{{ forloop.counter }}</span>
+                  <input
+                    type="hidden"
+                    class="order-input"
+                    name="order_index_{{ material.id }}"
+                    value="{{ forloop.counter }}"
+                  >
+                </td>
+                <td>{{ material.item.eap_code }} - {{ material.item.description }}</td>
+                <td>{{ material.item.unit.code }}</td>
+                <td>
+                  <input
+                    type="number"
+                    name="default_quantity_{{ material.id }}"
+                    value="{{ material.default_quantity|stringformat:'0.3f' }}"
+                    min="0.001"
+                    step="0.001"
+                    required
+                    style="width: 10rem;"
+                  >
+                </td>
+                <td>
+                  <button type="submit" name="action" value="delete_material:{{ material.id }}">Excluir</button>
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5">Sem materiais padrao nesta disciplina.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if section.discipline.materials.all %}
+          <button type="submit" name="action" value="update_discipline_materials">
+            Salvar materiais da disciplina
+          </button>
+        {% endif %}
+      </form>
 
       <h3>Adicionar material padrao</h3>
       <form method="post">
@@ -146,4 +151,74 @@
       <p>Adicione uma disciplina para cadastrar materiais padrao.</p>
     </div>
   {% endfor %}
+
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      function updateOrder(list) {
+        list.querySelectorAll(".predefined-material-row").forEach(function (row, index) {
+          const value = String(index + 1);
+          const number = row.querySelector(".order-number");
+          const input = row.querySelector(".order-input");
+          if (number) {
+            number.textContent = value;
+          }
+          if (input) {
+            input.value = value;
+          }
+        });
+      }
+
+      function getAfterElement(list, y) {
+        const rows = Array.from(list.querySelectorAll(".predefined-material-row:not(.dragging)"));
+        return rows.reduce(
+          function (closest, row) {
+            const box = row.getBoundingClientRect();
+            const offset = y - box.top - box.height / 2;
+            if (offset < 0 && offset > closest.offset) {
+              return { offset: offset, element: row };
+            }
+            return closest;
+          },
+          { offset: Number.NEGATIVE_INFINITY, element: null },
+        ).element;
+      }
+
+      document.querySelectorAll(".predefined-materials-list").forEach(function (list) {
+        updateOrder(list);
+
+        list.addEventListener("dragstart", function (event) {
+          const row = event.target.closest(".predefined-material-row");
+          if (!row || !event.target.closest(".drag-handle")) {
+            event.preventDefault();
+            return;
+          }
+          row.classList.add("dragging");
+          event.dataTransfer.effectAllowed = "move";
+        });
+
+        list.addEventListener("dragend", function (event) {
+          const row = event.target.closest(".predefined-material-row");
+          if (row) {
+            row.classList.remove("dragging");
+          }
+          updateOrder(list);
+        });
+
+        list.addEventListener("dragover", function (event) {
+          event.preventDefault();
+          const dragging = list.querySelector(".dragging");
+          if (!dragging) {
+            return;
+          }
+          const afterElement = getAfterElement(list, event.clientY);
+          if (afterElement) {
+            list.insertBefore(dragging, afterElement);
+          } else {
+            list.appendChild(dragging);
+          }
+          updateOrder(list);
+        });
+      });
+    });
+  </script>
 {% endblock %}

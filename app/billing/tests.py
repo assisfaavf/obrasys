@@ -776,26 +776,71 @@ class PredefinedEnvironmentMaterialsTests(TestCase):
         self.assertContains(response, "Tubo PVC 100mm")
         self.assertContains(response, "Joelho PVC 100mm")
         self.assertNotContains(response, "Registro agua fria")
+        self.assertContains(response, "Arrastar")
+        self.assertContains(response, f'name="order_index_{self.material_a.id}"')
+        self.assertContains(response, f'name="order_index_{self.material_b.id}"')
 
-    def test_material_pattern_quantity_can_be_edited_inline(self):
+    def test_material_pattern_quantities_and_order_are_saved_by_discipline(self):
         self.client.login(username="environment-admin", password="test")
 
         response = self.client.post(
             reverse("billing:predefined_environment_detail", args=[self.environment.id]),
             {
-                "action": "update_material",
-                "material_id": str(self.material_a.id),
-                "default_quantity": "3.750",
-                "order_index": "7",
-                "is_active": "on",
+                "action": "update_discipline_materials",
+                "environment_discipline_id": str(self.environment_discipline.id),
+                f"default_quantity_{self.material_a.id}": "3.750",
+                f"order_index_{self.material_a.id}": "2",
+                f"default_quantity_{self.material_b.id}": "5.250",
+                f"order_index_{self.material_b.id}": "1",
             },
         )
 
         self.assertRedirects(response, reverse("billing:predefined_environment_detail", args=[self.environment.id]))
         self.material_a.refresh_from_db()
+        self.material_b.refresh_from_db()
         self.assertEqual(self.material_a.default_quantity, Decimal("3.750"))
-        self.assertEqual(self.material_a.order_index, 7)
+        self.assertEqual(self.material_a.order_index, 2)
         self.assertTrue(self.material_a.is_active)
+        self.assertEqual(self.material_b.default_quantity, Decimal("5.250"))
+        self.assertEqual(self.material_b.order_index, 1)
+        self.assertTrue(self.material_b.is_active)
+
+    def test_material_pattern_add_assigns_next_order_automatically(self):
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:predefined_environment_detail", args=[self.environment.id]),
+            {
+                "action": "add_material",
+                "environment_discipline_id": str(self.environment_discipline.id),
+                "item": str(self.item_c.id),
+                "default_quantity": "6.000",
+            },
+        )
+
+        self.assertRedirects(response, reverse("billing:predefined_environment_detail", args=[self.environment.id]))
+        material = PredefinedEnvironmentMaterial.objects.get(item=self.item_c)
+        self.assertEqual(material.order_index, 3)
+        self.assertEqual(material.default_quantity, Decimal("6.000"))
+
+    def test_material_pattern_can_be_deleted_from_discipline(self):
+        self.client.login(username="environment-admin", password="test")
+
+        response = self.client.post(
+            reverse("billing:predefined_environment_detail", args=[self.environment.id]),
+            {
+                "action": f"delete_material:{self.material_b.id}",
+                "environment_discipline_id": str(self.environment_discipline.id),
+                f"default_quantity_{self.material_a.id}": "2.000",
+                f"order_index_{self.material_a.id}": "1",
+                f"default_quantity_{self.material_b.id}": "4.000",
+                f"order_index_{self.material_b.id}": "2",
+            },
+        )
+
+        self.assertRedirects(response, reverse("billing:predefined_environment_detail", args=[self.environment.id]))
+        self.assertTrue(PredefinedEnvironmentMaterial.objects.filter(pk=self.material_a.pk).exists())
+        self.assertFalse(PredefinedEnvironmentMaterial.objects.filter(pk=self.material_b.pk).exists())
 
     def test_material_pattern_edit_does_not_change_existing_measurement_line(self):
         MeasurementLine.objects.create(
@@ -810,11 +855,12 @@ class PredefinedEnvironmentMaterialsTests(TestCase):
         self.client.post(
             reverse("billing:predefined_environment_detail", args=[self.environment.id]),
             {
-                "action": "update_material",
-                "material_id": str(self.material_a.id),
-                "default_quantity": "4.500",
-                "order_index": "1",
-                "is_active": "on",
+                "action": "update_discipline_materials",
+                "environment_discipline_id": str(self.environment_discipline.id),
+                f"default_quantity_{self.material_a.id}": "4.500",
+                f"order_index_{self.material_a.id}": "1",
+                f"default_quantity_{self.material_b.id}": "4.000",
+                f"order_index_{self.material_b.id}": "2",
             },
         )
 
