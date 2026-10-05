@@ -31,6 +31,8 @@ Este documento registra as features implementadas no sistema e deve ser atualiza
 - O lote reaproveita o mesmo fluxo de criacao das linhas contratadas individuais, incluindo historico, consolidacao com linha existente e recalculo de materiais adicionais.
 - Itens duplicados no mesmo envio em lote sao bloqueados para evitar soma silenciosa dentro do formulario.
 - Ambientes predefinidos por obra permitem cadastrar disciplinas e materiais padrao com quantidades.
+- Os materiais padrao de uma disciplina sao salvos em conjunto, e itens que nao fazem mais parte do padrao sao excluidos da disciplina.
+- A ordem dos materiais padrao e numerada automaticamente a partir de 1 e pode ser reorganizada por arraste na lista da disciplina.
 - A medicao pode adicionar materiais por ambiente, carregando uma copia editavel dos materiais padrao.
 - A aplicacao por ambiente preserva localizacao, referencia da aplicacao, data e notas como campos compartilhados.
 - Materiais removidos ou extras na aplicacao nao alteram o ambiente predefinido original.

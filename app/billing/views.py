@@ -276,7 +276,10 @@ def predefined_environment_detail_view(request, environment_id: int):
             material_form = PredefinedEnvironmentMaterialForm(request.POST, environment_discipline=discipline)
             material_forms[discipline.id] = material_form
             if material_form.is_valid():
-                material_form.save()
+                material = material_form.save(commit=False)
+                last_order = discipline.materials.aggregate(max_order=Max("order_index"))["max_order"] or 0
+                material.order_index = last_order + 1
+                material.save()
                 messages.success(request, "Material padrao adicionado.")
                 return redirect("billing:predefined_environment_detail", environment_id=environment.id)
         elif action == "toggle_discipline":
@@ -289,33 +292,38 @@ def predefined_environment_detail_view(request, environment_id: int):
             discipline.save(update_fields=["is_active", "updated_at"])
             messages.success(request, "Status da disciplina atualizado.")
             return redirect("billing:predefined_environment_detail", environment_id=environment.id)
-        elif action == "toggle_material":
-            material = get_object_or_404(
-                PredefinedEnvironmentMaterial.objects.select_related("environment_discipline"),
-                pk=request.POST.get("material_id"),
-                environment_discipline__environment=environment,
+        elif action == "update_discipline_materials":
+            discipline = get_object_or_404(
+                PredefinedEnvironmentDiscipline,
+                pk=request.POST.get("environment_discipline_id"),
+                environment=environment,
             )
-            material.is_active = not material.is_active
-            material.save(update_fields=["is_active", "updated_at"])
-            messages.success(request, "Status do material padrao atualizado.")
-            return redirect("billing:predefined_environment_detail", environment_id=environment.id)
-        elif action == "update_material":
-            material = get_object_or_404(
-                PredefinedEnvironmentMaterial.objects.select_related("environment_discipline"),
-                pk=request.POST.get("material_id"),
-                environment_discipline__environment=environment,
-            )
-            material.default_quantity = request.POST.get("default_quantity")
-            material.order_index = request.POST.get("order_index") or 0
-            material.is_active = request.POST.get("is_active") == "on"
+            materials = list(PredefinedEnvironmentMaterial.objects.filter(environment_discipline=discipline))
             try:
-                material.save()
+                with transaction.atomic():
+                    for material in materials:
+                        material.default_quantity = request.POST.get(f"default_quantity_{material.id}", "")
+                        material.order_index = request.POST.get(f"order_index_{material.id}") or 0
+                        material.is_active = True
+                        material.full_clean()
+                    for material in materials:
+                        material.save(update_fields=["default_quantity", "order_index", "is_active", "updated_at"])
             except ValidationError as exc:
                 for message in exc.messages:
                     messages.error(request, message)
             else:
-                messages.success(request, "Material padrao atualizado.")
+                messages.success(request, "Materiais padrao da disciplina atualizados.")
                 return redirect("billing:predefined_environment_detail", environment_id=environment.id)
+        elif action and action.startswith("delete_material:"):
+            material_id = action.removeprefix("delete_material:")
+            material = get_object_or_404(
+                PredefinedEnvironmentMaterial.objects.select_related("environment_discipline"),
+                pk=material_id,
+                environment_discipline__environment=environment,
+            )
+            material.delete()
+            messages.success(request, "Material padrao excluido.")
+            return redirect("billing:predefined_environment_detail", environment_id=environment.id)
 
     disciplines = list(environment.disciplines.select_related("discipline").prefetch_related("materials__item__unit"))
     discipline_sections = []
