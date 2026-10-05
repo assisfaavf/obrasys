@@ -27,6 +27,12 @@
     .drag-handle {
       cursor: grab;
       margin-right: 0.5rem;
+      user-select: none;
+      touch-action: none;
+    }
+
+    .drag-handle:active {
+      cursor: grabbing;
     }
 
     .order-number {
@@ -97,7 +103,7 @@
           </thead>
           <tbody class="predefined-materials-list">
             {% for material in section.discipline.materials.all %}
-              <tr class="predefined-material-row" draggable="true">
+              <tr class="predefined-material-row">
                 <td>
                   <button class="drag-handle" type="button" aria-label="Arrastar material">Arrastar</button>
                   <span class="order-number">{{ forloop.counter }}</span>
@@ -188,18 +194,21 @@
 
         list.addEventListener("dragstart", function (event) {
           const row = event.target.closest(".predefined-material-row");
-          if (!row || !event.target.closest(".drag-handle")) {
+          if (!row || row.dataset.dragEnabled !== "true") {
             event.preventDefault();
             return;
           }
           row.classList.add("dragging");
           event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", "");
         });
 
         list.addEventListener("dragend", function (event) {
           const row = event.target.closest(".predefined-material-row");
           if (row) {
             row.classList.remove("dragging");
+            row.draggable = false;
+            delete row.dataset.dragEnabled;
           }
           updateOrder(list);
         });
@@ -218,7 +227,37 @@
           }
           updateOrder(list);
         });
+
+        list.querySelectorAll(".drag-handle").forEach(function (handle) {
+          handle.addEventListener("mousedown", function () {
+            const row = handle.closest(".predefined-material-row");
+            if (!row) {
+              return;
+            }
+            row.draggable = true;
+            row.dataset.dragEnabled = "true";
+          });
+
+          handle.addEventListener("touchstart", function () {
+            const row = handle.closest(".predefined-material-row");
+            if (!row) {
+              return;
+            }
+            row.draggable = true;
+            row.dataset.dragEnabled = "true";
+          });
+        });
       });
+
+      function resetInactiveDragRows() {
+        document.querySelectorAll(".predefined-material-row:not(.dragging)").forEach(function (row) {
+          row.draggable = false;
+          delete row.dataset.dragEnabled;
+        });
+      }
+
+      document.addEventListener("mouseup", resetInactiveDragRows);
+      document.addEventListener("touchend", resetInactiveDragRows);
     });
   </script>
 {% endblock %}
