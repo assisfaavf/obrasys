@@ -398,7 +398,7 @@ class PredefinedEnvironmentDisciplineForm(forms.ModelForm):
 class PredefinedEnvironmentMaterialForm(forms.ModelForm):
     class Meta:
         model = PredefinedEnvironmentMaterial
-        fields = ["item", "default_quantity", "order_index", "is_active"]
+        fields = ["item", "default_quantity"]
 
     def __init__(self, *args, environment_discipline: PredefinedEnvironmentDiscipline, **kwargs):
         super().__init__(*args, **kwargs)
@@ -411,8 +411,6 @@ class PredefinedEnvironmentMaterialForm(forms.ModelForm):
         _apply_measurement_item_select_attrs(self.fields["item"])
         self.fields["item"].label = "Material"
         self.fields["default_quantity"].label = "Quantidade padrao"
-        self.fields["order_index"].label = "Ordem"
-        self.fields["is_active"].label = "Ativo"
 
     def save(self, commit=True):
         instance = super().save(commit=False)
