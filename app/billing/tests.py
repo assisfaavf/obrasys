@@ -35,6 +35,29 @@ from core.models import Client, Project, ProjectLocation
 from pricing.models import PriceIndex, PriceIndexValue, ProjectPriceAdjustment
 
 
+class HomeViewTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        customer = Client.objects.create(name="Cliente do painel")
+        cls.project = Project.objects.create(name="Obra do painel", client=customer)
+
+    def test_public_home_links_to_modules_without_exposing_projects(self):
+        response = self.client.get(reverse("billing:home"))
+
+        for name in ("billing:project_list", "stock:reports_home", "admin:index"):
+            self.assertContains(response, f'href="{reverse(name)}"')
+        self.assertNotContains(response, self.project.name)
+
+    def test_staff_home_offers_project_shortcuts(self):
+        self.client.force_login(get_user_model().objects.create_user(username="equipe", is_staff=True))
+
+        response = self.client.get(reverse("billing:home"))
+
+        self.assertContains(response, self.project.name)
+        self.assertContains(response, f'{reverse("billing:project_detail", args=[self.project.pk])}#medicoes')
+        self.assertContains(response, reverse("rdo:project_rdo_list", args=[self.project.pk]))
+
+
 class MeasurementCalcTests(TestCase):
     def setUp(self):
         self.client_obj = Client.objects.create(name="Cliente Teste")

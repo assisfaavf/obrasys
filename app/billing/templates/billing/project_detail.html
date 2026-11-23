@@ -1,15 +1,15 @@
 {% extends "billing/base.html" %}
 
-{% block title %}Project {{ project.name }}{% endblock %}
+{% block title %}{{ project.name }} | Obrasys{% endblock %}
 
 {% block content %}
   <h1>{{ project.name }}</h1>
-  <p class="muted">Client: {{ project.client.name }} | Status: {{ project.status }}</p>
+  <p class="muted">Cliente: {{ project.client.name }} | Situa&ccedil;&atilde;o: {{ project.get_status_display }}</p>
 
   <div class="actions">
-    <a href="{% url 'billing:measurement_new' project.id %}">Nova medicao</a>
+    <a href="{% url 'billing:measurement_new' project.id %}">Nova medi&ccedil;&atilde;o</a>
     <a href="{% url 'billing:predefined_environment_list' project.id %}">Ambientes predefinidos</a>
-    <a href="{% url 'rdo:project_rdo_list' project.id %}">RDO / Diario de Obras</a>
+    <a href="{% url 'rdo:project_rdo_list' project.id %}">Di&aacute;rio de obras (RDO)</a>
     <a href="{% url 'rdo:work_order' project.id %}">Livro de Ordem</a>
     {% if sienge_template_available %}
       <a href="{% url 'billing:project_export_sienge_master' project.id %}">Gerar/Atualizar Sienge Mestre</a>
@@ -36,7 +36,7 @@
       <thead>
         <tr>
           <th>Ordem</th>
-          <th>Code</th>
+          <th>C&oacute;digo</th>
           <th>Nome</th>
           <th>Ativo</th>
         </tr>
@@ -58,16 +58,17 @@
     </table>
   </div>
 
-  <h2>Medicoes</h2>
+  <h2 id="medicoes">Medi&ccedil;&otilde;es</h2>
+  <div class="table-scroll" tabindex="0" role="region" aria-labelledby="medicoes">
   <table>
     <thead>
       <tr>
-        <th>Numero</th>
-        <th>Ref month</th>
-        <th>Workflow</th>
-        <th>Financial</th>
-        <th>Total snapshot</th>
-        <th>Actions</th>
+        <th>N&uacute;mero</th>
+        <th>M&ecirc;s de refer&ecirc;ncia</th>
+        <th>Situa&ccedil;&atilde;o</th>
+        <th>Financeiro</th>
+        <th>Total registrado</th>
+        <th>A&ccedil;&otilde;es</th>
       </tr>
     </thead>
     <tbody>
@@ -78,13 +79,14 @@
           <td>{{ period.workflow_status }}</td>
           <td>{{ period.financial_status }}</td>
           <td>{{ period.total_indexed_snapshot|default:period.total_total_snapshot }}</td>
-          <td><a href="{% url 'billing:measurement_detail' period.id %}">Open</a></td>
+          <td><a href="{% url 'billing:measurement_detail' period.id %}">Abrir medi&ccedil;&atilde;o</a></td>
         </tr>
       {% empty %}
         <tr>
-          <td colspan="6">No measurements yet.</td>
+          <td colspan="6">Nenhuma medi&ccedil;&atilde;o cadastrada.</td>
         </tr>
       {% endfor %}
     </tbody>
   </table>
+  </div>
 {% endblock %}

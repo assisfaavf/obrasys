@@ -2,6 +2,12 @@
 
 Este documento registra as features implementadas no sistema e deve ser atualizado a cada nova feature.
 
+## Inicio e navegacao
+
+- O painel inicial da acesso a obras, relatorios de estoque e administracao.
+- Usuarios da equipe veem atalhos para medicoes e diarios das obras cadastradas.
+- O atalho do Windows abre o painel inicial em uma janela propria.
+
 ## Estoque Core
 
 - Cadastro de materiais com codigo, nome, marca e unidade padrao.

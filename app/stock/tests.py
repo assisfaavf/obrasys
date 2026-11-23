@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.contrib.staticfiles import finders
+from django.templatetags.static import static
 from django.test import TestCase
 from django.urls import NoReverseMatch, reverse
 from django.utils import timezone
@@ -245,8 +246,8 @@ class StockCoreTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'name="target_location"')
-        self.assertContains(response, "stock/admin_stock_movement.css")
-        self.assertContains(response, "stock/admin_stock_movement.js")
+        self.assertContains(response, static("stock/admin_stock_movement.css"))
+        self.assertContains(response, static("stock/admin_stock_movement.js"))
         css_path = finders.find("stock/admin_stock_movement.css")
         self.assertIsNotNone(css_path)
         with open(css_path, encoding="utf-8") as css_file:
