@@ -1,0 +1,54 @@
+{% extends "billing/base.html" %}
+
+{% block title %}In&iacute;cio | Obrasys{% endblock %}
+
+{% block content %}
+  <h1>Painel de opera&ccedil;&otilde;es</h1>
+  <div class="module-grid">
+    <a class="module module-works" href="{% url 'billing:project_list' %}">
+      <span class="module-mark" aria-hidden="true">&#9638;</span>
+      <h2>Obras</h2>
+      <p>Medi&ccedil;&otilde;es, di&aacute;rios de obra e ambientes predefinidos.</p>
+      <span class="module-action">Abrir obras <span aria-hidden="true">&rarr;</span></span>
+    </a>
+    <a class="module module-stock" href="{% url 'stock:reports_home' %}">
+      <span class="module-mark" aria-hidden="true">&#9636;</span>
+      <h2>Estoque</h2>
+      <p>Saldos por local e material, matriz de saldos e movimenta&ccedil;&otilde;es.</p>
+      <span class="module-action">Abrir estoque <span aria-hidden="true">&rarr;</span></span>
+    </a>
+    <a class="module module-admin" href="{% url 'admin:index' %}">
+      <span class="module-mark" aria-hidden="true">&#9881;</span>
+      <h2>Administra&ccedil;&atilde;o</h2>
+      <p>Cadastros, importa&ccedil;&otilde;es e configura&ccedil;&otilde;es do Obrasys.</p>
+      <span class="module-action">Abrir administra&ccedil;&atilde;o <span aria-hidden="true">&rarr;</span></span>
+    </a>
+  </div>
+
+  {% if request.user.is_active and request.user.is_staff %}
+    <section class="home-projects" aria-labelledby="my-projects">
+      <div class="section-heading">
+        <h2 id="my-projects">Obras cadastradas</h2>
+        <a href="{% url 'billing:project_list' %}">Ver todas as obras</a>
+      </div>
+      {% if projects %}
+        <ul class="project-shortcuts">
+          {% for project in projects %}
+            <li>
+              <div>
+                <a class="project-name" href="{% url 'billing:project_detail' project.id %}">{{ project.name }}</a>
+                <span class="muted">{{ project.client.name }}</span>
+              </div>
+              <div class="actions">
+                <a href="{% url 'billing:project_detail' project.id %}#medicoes">Medi&ccedil;&otilde;es</a>
+                <a href="{% url 'rdo:project_rdo_list' project.id %}">Di&aacute;rio de obras</a>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="muted">Nenhuma obra cadastrada.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}

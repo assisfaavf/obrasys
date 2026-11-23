@@ -1,43 +1,49 @@
 {% load static %}
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Obrasys{% endblock %}</title>
-  <style>
-    body { font-family: sans-serif; margin: 20px; }
-    table { border-collapse: collapse; width: 100%; margin: 12px 0; }
-    th, td { border: 1px solid #ccc; padding: 8px; vertical-align: top; }
-    th { background: #f5f5f5; text-align: left; }
-    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
-    .card { border: 1px solid #ddd; padding: 12px; margin: 12px 0; }
-    .errors { color: #8b0000; }
-    .ok { color: #006400; }
-    .muted { color: #666; font-size: 0.95em; }
-    .topnav a { margin-right: 10px; }
-  </style>
+  <link rel="stylesheet" href="{% static 'css/obrasys.css' %}">
 
-  <link rel="icon" type="image/x-icon" href="{% static 'img/favicon.ico' %}">
-  <link rel="shortcut icon" type="image/x-icon" href="{% static 'img/favicon.ico' %}">
-  <link rel="icon" type="image/png" sizes="32x32" href="{% static 'img/favicon-32.png' %}">
-  <link rel="icon" type="image/png" sizes="16x16" href="{% static 'img/favicon-16.png' %}">
-  <link rel="apple-touch-icon" sizes="180x180" href="{% static 'img/favicon-180.png' %}">
+  <link rel="icon" type="image/x-icon" href="{% static 'img/obrasys.ico' %}">
+  <link rel="icon" type="image/webp" sizes="512x512" href="{% static 'img/obrasys-logo-capacete-branco.webp' %}">
+  <link rel="manifest" href="{% static 'obrasys.webmanifest' %}">
 </head>
 <body>
-  <div class="topnav">
-    <a href="{% url 'billing:project_list' %}">Projects</a>
-    <a href="/admin/">Admin</a>
-  </div>
+  <a class="skip-link" href="#conteudo">Ir para o conte&uacute;do</a>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="{% url 'billing:home' %}">
+        <span class="brand-logo">
+          <img src="{% static 'img/favicon-512.png' %}" alt="SPATE Engenharia" width="512" height="512">
+        </span>
+        Obrasys
+      </a>
+      <nav class="topnav" aria-label="Navega&ccedil;&atilde;o principal">
+        <a href="{% url 'billing:home' %}"{% if request.resolver_match.url_name == 'home' %} aria-current="page"{% endif %}>In&iacute;cio</a>
+        <a href="{% url 'billing:project_list' %}"{% if request.resolver_match.url_name == 'project_list' %} aria-current="page"{% endif %}>Obras</a>
+        <a href="{% url 'stock:reports_home' %}"{% if request.resolver_match.url_name == 'reports_home' %} aria-current="page"{% endif %}>Estoque</a>
+        <a href="{% url 'admin:index' %}">Administra&ccedil;&atilde;o</a>
+      </nav>
+      {% if request.user.is_active and request.user.is_staff %}
+        <span class="account">{{ request.user.get_username }}</span>
+      {% else %}
+        <a class="button primary" href="{% url 'admin:login' %}?next={% url 'billing:home' %}">Entrar</a>
+      {% endif %}
+    </div>
+  </header>
 
-  {% if messages %}
-    <ul>
-      {% for message in messages %}
-        <li>{{ message }}</li>
-      {% endfor %}
-    </ul>
-  {% endif %}
-
-  {% block content %}{% endblock %}
+  <main id="conteudo" class="shell page">
+    {% if messages %}
+      <ul class="messages" aria-label="Notifica&ccedil;&otilde;es">
+        {% for message in messages %}
+          <li class="{{ message.tags }}">{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
 </body>
 </html>

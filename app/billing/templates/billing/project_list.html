@@ -1,16 +1,17 @@
 {% extends "billing/base.html" %}
 
-{% block title %}Projects{% endblock %}
+{% block title %}Obras | Obrasys{% endblock %}
 
 {% block content %}
-  <h1>Projects</h1>
+  <h1>Obras</h1>
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Lista de obras">
   <table>
     <thead>
       <tr>
-        <th>Project</th>
-        <th>Client</th>
-        <th>Status</th>
-        <th>Actions</th>
+        <th>Obra</th>
+        <th>Cliente</th>
+        <th>Situa&ccedil;&atilde;o</th>
+        <th>A&ccedil;&otilde;es</th>
       </tr>
     </thead>
     <tbody>
@@ -18,14 +19,15 @@
         <tr>
           <td>{{ project.name }}</td>
           <td>{{ project.client.name }}</td>
-          <td>{{ project.status }}</td>
-          <td><a href="{% url 'billing:project_detail' project.id %}">Open</a></td>
+          <td>{% if project.status == "PLANNED" %}Planejada{% elif project.status == "IN_PROGRESS" %}Em andamento{% elif project.status == "PAUSED" %}Pausada{% elif project.status == "DONE" %}Conclu&iacute;da{% else %}{{ project.get_status_display }}{% endif %}</td>
+          <td><a href="{% url 'billing:project_detail' project.id %}">Abrir obra</a></td>
         </tr>
       {% empty %}
         <tr>
-          <td colspan="4">No projects found.</td>
+          <td colspan="4">Nenhuma obra cadastrada.</td>
         </tr>
       {% endfor %}
     </tbody>
   </table>
+  </div>
 {% endblock %}

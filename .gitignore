@@ -4,6 +4,9 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.desktop
+/desktop/Obrasys.exe
+/backups/local/
 
 # Django
 app/db.sqlite3
