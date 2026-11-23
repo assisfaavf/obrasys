@@ -23,7 +23,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path(
         "favicon.ico",
-        RedirectView.as_view(url=f"{settings.STATIC_URL}img/obrasys.ico", permanent=False),
+        RedirectView.as_view(url=f"{settings.STATIC_URL}img/obrasys-192.png", permanent=False),
     ),
     path("api/", include("api.urls")),
     path("", include("stock.urls")),

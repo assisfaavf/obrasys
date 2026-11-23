@@ -25,5 +25,5 @@ docker compose -f docker-compose.yml -f docker-compose.desktop.yml stop
 Para recompilar o iniciador, rode na raiz do projeto:
 
 ```powershell
-& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /out:desktop\Obrasys.exe /win32icon:app\static\img\obrasys.ico /reference:System.Windows.Forms.dll desktop\Obrasys.cs
+& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /out:desktop\Obrasys.exe /win32icon:app\static\img\obrasys-logo-capacete-branco.ico /reference:System.Windows.Forms.dll desktop\Obrasys.cs
 ```
