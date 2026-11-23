@@ -5,6 +5,7 @@ from billing import views
 app_name = "billing"
 
 urlpatterns = [
+    path("", views.home_view, name="home"),
     path("projects/", views.project_list_view, name="project_list"),
     path("projects/<int:project_id>/", views.project_detail_view, name="project_detail"),
     path(

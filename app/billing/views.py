@@ -119,6 +119,13 @@ def _build_additional_materials_map(items) -> dict[str, list[dict[str, str]]]:
     return summary_map
 
 
+def home_view(request):
+    projects = ()
+    if request.user.is_active and request.user.is_staff:
+        projects = Project.objects.select_related("client").order_by("name", "pk")[:5]
+    return render(request, "billing/home.html", {"projects": projects})
+
+
 @staff_member_required
 def project_list_view(request):
     projects = Project.objects.select_related("client").order_by("name")
